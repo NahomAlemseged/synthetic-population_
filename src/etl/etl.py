@@ -1,11 +1,10 @@
-import os
-from pathlib import Path
 import yaml
 import torch
+from pathlib import Path
 
-# ==============================
-# GPU Detection
-# ==============================
+# =============================
+# GPU DETECTION
+# =============================
 
 GPU_AVAILABLE = torch.cuda.is_available()
 
@@ -16,116 +15,172 @@ else:
     print("💻 Using CPU Dask")
     import dask.dataframe as dd
 
-# ==============================
-# Load Config
-# ==============================
+
+# =============================
+# LOAD CONFIG
+# =============================
 
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 
-with open(CONFIG_PATH, "r") as f:
+with open(CONFIG_PATH) as f:
     params_ = yaml.safe_load(f)
 
-# ==============================
-# ETL Class
-# ==============================
+
+# =============================
+# ETL CLASS
+# =============================
 
 class ETL:
 
     def __init__(self):
-        self.input_paths = params_["etl"]["input"]
-        self.output_path = Path(params_["etl"]["output"][0])
+
+        self.input_dirs = [Path(p) for p in params_["etl"]["input"]]
+        self.output_dir = Path(params_["etl"]["output"][0])
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --------------------------------------------------
+    # SAFE CSV LOADER
+    # --------------------------------------------------
+
+    def load_txt(self, files):
+
+        ddf = dd.read_csv(
+            files,
+            sep="\t",
+            dtype=str,
+            encoding="latin1",
+            assume_missing=True,
+            blocksize="128MB",
+            on_bad_lines="warn"
+        )
+
+        return ddf
 
     # --------------------------------------------------
     # EXTRACT + TRANSFORM
     # --------------------------------------------------
 
     def extract_transform(self):
-        """
-        Scan directories, load BASE_DATA_1 and GROUPER txt files,
-        and return a dictionary of Dask (or cuDF) DataFrames
-        """
-        dfs = {}
 
-        for dir_path in self.input_paths:
-            dir_path = Path(dir_path)
-            print(f"\n📂 Scanning {dir_path}")
+        datasets = {}
 
-            if not dir_path.exists():
-                print("❌ Directory does not exist")
+        for directory in self.input_dirs:
+
+            print(f"\n📂 Scanning {directory}")
+
+            if not directory.exists():
+                print("❌ directory missing")
                 continue
 
-            txt_files = list(dir_path.rglob("*.txt"))
-            print(f"Found {len(txt_files)} txt files")
+            txt_files = list(directory.rglob("*.txt"))
 
-            # Filter files based on THCIC naming
-            if "outpatient" in dir_path.name.lower():
+            if not txt_files:
+                print("⚠️ no txt files found")
+                continue
+
+            print(f"Found {len(txt_files)} files")
+
+            # THCIC naming
+            if "outpatient" in directory.name.lower():
+
                 base_files = [str(p) for p in txt_files if "BASE" in p.name]
                 grouper_files = [str(p) for p in txt_files if "GROUPER" in p.name]
+
             else:
+
                 base_files = [str(p) for p in txt_files if "BASE_DATA_1" in p.name]
                 grouper_files = [str(p) for p in txt_files if "GROUPER" in p.name]
 
-            # ----------------------
-            # BASE FILES
-            # ----------------------
+            # -------------------------
+            # BASE DATA
+            # -------------------------
+
             if base_files:
+
                 print(f"Loading {len(base_files)} BASE files")
-                # Dask can read multiple files directly
-                df_base = dd.read_csv(base_files, sep="\t", dtype=str)
-                df_base["TYPE"] = dir_path.name
-                dfs[f"df_base_1_{dir_path.name}"] = df_base
-                print(f"✅ df_base_1_{dir_path.name} loaded")
-            else:
-                print("⚠️ No BASE files found")
 
-            # ----------------------
-            # GROUPER FILES
-            # ----------------------
+                df_base = self.load_txt(base_files)
+
+                df_base["DATASET_TYPE"] = directory.name
+
+                base_rows = df_base.shape[0].compute()
+
+                print(f"BASE rows: {base_rows:,}")
+
+                datasets[f"df_base_1_{directory.name}"] = df_base
+
+            else:
+                print("⚠️ no BASE files found")
+
+            # -------------------------
+            # GROUPER DATA
+            # -------------------------
+
             if grouper_files:
+
                 print(f"Loading {len(grouper_files)} GROUPER files")
-                df_grouper = dd.read_csv(grouper_files, sep="\t", dtype=str)
-                df_grouper["TYPE"] = dir_path.name
-                dfs[f"df_grouper_{dir_path.name}"] = df_grouper
-                print(f"✅ df_grouper_{dir_path.name} loaded")
+
+                df_grouper = self.load_txt(grouper_files)
+
+                df_grouper["DATASET_TYPE"] = directory.name
+
+                grouper_rows = df_grouper.shape[0].compute()
+
+                print(f"GROUPER rows: {grouper_rows:,}")
+
+                datasets[f"df_grouper_{directory.name}"] = df_grouper
+
             else:
-                print("⚠️ No GROUPER files found")
+                print("⚠️ no GROUPER files found")
 
-        if not dfs:
-            raise ValueError("❌ No datasets extracted in ETL.")
+        if not datasets:
+            raise ValueError("❌ No datasets extracted")
 
-        return dfs
+        return datasets
 
     # --------------------------------------------------
-    # LOAD (SAVE CLEAN DATA)
+    # LOAD → PARQUET
     # --------------------------------------------------
 
-    def load(self, dfs):
-        """
-        Save extracted DataFrames to output path in Parquet format
-        """
-        self.output_path.mkdir(parents=True, exist_ok=True)
+    def load(self, datasets):
 
-        for dataset_name, ddf in dfs.items():
-            out_dir = self.output_path / dataset_name
+        for name, ddf in datasets.items():
+
+            out_dir = self.output_dir / name
+
+            print(f"\n💾 Saving {name}")
+
             out_dir.mkdir(parents=True, exist_ok=True)
-            print(f"\n💾 Saving {dataset_name} → {out_dir}")
-            ddf.to_parquet(out_dir, write_index=False)
-            print(f"✅ Saved → {out_dir}")
+
+            # deterministic partition size
+            ddf = ddf.repartition(partition_size="200MB")
+
+            ddf.to_parquet(
+                out_dir,
+                write_index=False,
+                compression="snappy"
+            )
+
+            print(f"✅ saved → {out_dir}")
 
         print("\n🎯 ETL COMPLETE")
 
-# ==============================
-# RUN
-# ==============================
+
+# =============================
+# MAIN
+# =============================
 
 def main():
-    """
-    Run the ETL pipeline sequentially (safe for GPU)
-    """
+
     etl = ETL()
-    dfs = etl.extract_transform()
-    etl.load(dfs)
-    print("\n🎯 ETL pipeline finished successfully!")
+
+    datasets = etl.extract_transform()
+
+    etl.load(datasets)
+
+    print("\n🎯 Pipeline finished successfully")
+
 
 if __name__ == "__main__":
     main()
