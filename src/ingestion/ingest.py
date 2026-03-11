@@ -2,10 +2,12 @@ import yaml
 from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
+import re
 
 # ==============================
 # Load Config
 # ==============================
+
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 
 with open(CONFIG_PATH, "r") as f:
@@ -16,7 +18,10 @@ output_path = Path(params_["ingestion"]["output"])
 test_size = params_["ingestion"].get("test_size", 0.2)
 random_state = params_["ingestion"].get("random_state", 42)
 
+# ==============================
 # Columns to keep
+# ==============================
+
 BASE_COLUMNS = [
     'RECORD_ID', 'DISCHARGE', 'TYPE_OF_ADMISSION', 'SOURCE_OF_ADMISSION',
     'PAT_ZIP', 'PAT_COUNTY', 'PUBLIC_HEALTH_REGION', 'PAT_STATUS',
@@ -26,74 +31,128 @@ BASE_COLUMNS = [
 
 GROUPER_COLUMNS = ['RECORD_ID', 'APR_MDC']
 
+
+# ==============================
+# Helper: natural sorting
+# ==============================
+
+def part_number(path):
+    m = re.search(r"part\.(\d+)", path.name)
+    return int(m.group(1)) if m else -1
+
+
 # ==============================
 # Ingestion Class
 # ==============================
+
 class Ingestion:
+
     def __init__(self, input_dir, output_path):
         self.input_dir = Path(input_dir)
         self.output_path = Path(output_path)
         self.output_path.mkdir(parents=True, exist_ok=True)
 
+    # --------------------------------------------------
+    # INGEST + MERGE
+    # --------------------------------------------------
+
     def ingest_data(self):
-        """
-        Merge all BASE and GROUPER folders automatically
-        """
+
         output_file = self.output_path / "final_data.csv"
         first_file = True
+        total_rows = 0
 
-        # Find base/grouper pairs
         base_folders = sorted(self.input_dir.glob("df_base_1_*"))
+
         for base_folder in base_folders:
+
             suffix = base_folder.name.replace("df_base_1_", "")
             grouper_folder = self.input_dir / f"df_grouper_{suffix}"
 
             if not grouper_folder.exists():
-                print(f"⚠️ No matching grouper folder for {base_folder.name}, skipping")
+                print(f"⚠️ No matching grouper folder for {base_folder.name}")
                 continue
 
-            # Merge all files in the folder
-            base_files = sorted(base_folder.glob("*.parquet"))
-            grouper_files = sorted(grouper_folder.glob("*.parquet"))
+            print(f"\n📂 Processing dataset: {suffix}")
 
-            for bf, gf in zip(base_files, grouper_files):
-                print(f"\n📂 Processing {bf.name} + {gf.name}")
+            # Sort partitions correctly
+            base_files = sorted(base_folder.glob("*.parquet"), key=part_number)
+            grouper_files = sorted(grouper_folder.glob("*.parquet"), key=part_number)
 
-                # --- Read BASE ---
-                df_base = pd.read_parquet(bf)
-                df_base = df_base[BASE_COLUMNS]
+            print(f"BASE partitions: {len(base_files)}")
+            print(f"GROUPER partitions: {len(grouper_files)}")
 
-                # --- Read GROUPER ---
-                df_grouper = pd.read_parquet(gf)
-                df_grouper = df_grouper[GROUPER_COLUMNS]
+            # Map grouper partitions
+            grouper_map = {part_number(p): p for p in grouper_files}
 
-                # --- Merge ---
-                df_merged = df_base.merge(df_grouper, on="RECORD_ID", how="inner")
-                df_merged.drop(columns=["RECORD_ID"], inplace=True)
-                print(f"✅ Merged shape: {df_merged.shape}")
+            for bf in base_files:
 
-                # --- Save incrementally ---
-                if first_file:
-                    df_merged.to_csv(output_file, index=False, mode='w')
-                    first_file = False
+                part = part_number(bf)
+
+                gf = grouper_map.get(part)
+
+                print(f"\n📄 BASE: {bf.name}")
+
+                df_base = pd.read_parquet(bf)[BASE_COLUMNS]
+
+                if gf:
+
+                    print(f"📄 GROUPER: {gf.name}")
+
+                    df_grouper = pd.read_parquet(gf)[GROUPER_COLUMNS]
+
+                    df_merged = df_base.merge(
+                        df_grouper,
+                        on="RECORD_ID",
+                        how="left"
+                    )
+
                 else:
-                    df_merged.to_csv(output_file, index=False, mode='a', header=False)
+
+                    print("⚠️ Missing grouper partition")
+
+                    df_base["APR_MDC"] = None
+                    df_merged = df_base
+
+                df_merged.drop(columns=["RECORD_ID"], inplace=True)
+
+                rows = len(df_merged)
+                total_rows += rows
+
+                print(f"✅ Rows merged: {rows:,}")
+
+                # Save incrementally
+                if first_file:
+
+                    df_merged.to_csv(output_file, index=False, mode="w")
+                    first_file = False
+
+                else:
+
+                    df_merged.to_csv(output_file, index=False, mode="a", header=False)
 
         if first_file:
-            raise FileNotFoundError("❌ No data merged. final_data.csv not created.")
+            raise FileNotFoundError("❌ No data merged.")
 
-        print(f"\n✅ Data merged successfully → {output_file}")
+        print(f"\n✅ Final dataset rows: {total_rows:,}")
+        print(f"Saved → {output_file}")
+
         return output_file
 
+    # --------------------------------------------------
+    # TRAIN TEST SPLIT
+    # --------------------------------------------------
+
     def save_splits(self, csv_file):
-        """
-        Split into train/test CSVs
-        """
-        print("\n✂️ Splitting train/test...")
+
+        print("\n✂️ Splitting train/test")
+
         df = pd.read_csv(csv_file)
 
         train_df, test_df = train_test_split(
-            df, test_size=test_size, random_state=random_state
+            df,
+            test_size=test_size,
+            random_state=random_state
         )
 
         train_file = self.output_path / "train.csv"
@@ -102,17 +161,24 @@ class Ingestion:
         train_df.to_csv(train_file, index=False)
         test_df.to_csv(test_file, index=False)
 
-        print(f"✅ Train saved: {train_file} ({len(train_df)} rows)")
-        print(f"✅ Test saved: {test_file} ({len(test_df)} rows)")
+        print(f"✅ Train rows: {len(train_df):,}")
+        print(f"✅ Test rows: {len(test_df):,}")
+
 
 # ==============================
 # Main
 # ==============================
+
 def main():
+
     ingest = Ingestion(input_dir, output_path)
+
     final_csv = ingest.ingest_data()
+
     ingest.save_splits(final_csv)
-    print("\n🎯 Pipeline Complete!")
+
+    print("\n🎯 Pipeline complete")
+
 
 if __name__ == "__main__":
     main()
