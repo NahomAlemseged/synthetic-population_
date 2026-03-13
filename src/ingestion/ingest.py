@@ -103,7 +103,7 @@ class Ingestion:
 
                     df_merged = df_base.merge(
                         df_grouper,
-                        on="RECORD_ID",
+                        on=["RECORD_ID","DISCHARGE"],
                         how="left"
                     )
 
@@ -113,6 +113,10 @@ class Ingestion:
 
                     df_base["APR_MDC"] = None
                     df_merged = df_base
+                    df_merged = df_merged.drop_duplicates(subset=['RECORD_ID'])
+
+                    # Optional: reset index after dropping duplicates
+                    df_merged = df_merged.reset_index(drop=True)
 
                 df_merged.drop(columns=["RECORD_ID"], inplace=True)
 
