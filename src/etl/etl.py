@@ -8,12 +8,12 @@ from pathlib import Path
 
 GPU_AVAILABLE = torch.cuda.is_available()
 
-if GPU_AVAILABLE:
-    print("🚀 GPU detected — using RAPIDS")
-    import dask_cudf as dd
-else:
-    print("💻 Using CPU Dask")
-    import dask.dataframe as dd
+# if GPU_AVAILABLE:
+#     print("🚀 GPU detected — using RAPIDS")
+#     import dask_cudf as dd
+# else:
+#     print("💻 Using CPU Dask")
+import dask.dataframe as dd
 
 
 # =============================
@@ -89,8 +89,17 @@ class ETL:
 
             else:
 
-                base_files = [str(p) for p in txt_files if "BASE_DATA_1" in p.name]
-                grouper_files = [str(p) for p in txt_files if "GROUPER" in p.name]
+              # Filter BASE_1 ED datasets (IP_ED and OP_ED), all quarters
+              base_files = [
+                  str(p) for p in txt_files
+                  if ("IP_ED_BASE_DATA_1" in p.name)
+              ]
+
+              # Filter corresponding grouper files for ED datasets
+              grouper_files = [
+                  str(p) for p in txt_files
+                  if ("IP_ED_GROUPER" in p.name)
+              ]
 
             # -------------------------
             # BASE DATA
