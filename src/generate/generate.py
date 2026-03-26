@@ -5,6 +5,7 @@ import torch
 import yaml
 from pathlib import Path
 from joblib import parallel_backend
+import os
 
 # from ctgan import CTGAN   # 🔒 Uncomment if using CTGAN
 import time
@@ -18,9 +19,8 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 
 from xgboost import XGBClassifier
-from sklearn.ensemble import RandomForestClassifier   # 🔒 optional
-from sklearn.linear_model import LogisticRegression   # 🔒 optional
-
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 
 # --------------------------
 # Command line arguments
@@ -37,7 +37,6 @@ epochs = args.epochs
 num_processes = args.num_processes
 sample_rows = args.sample_rows
 
-
 # --------------------------
 # Load YAML config
 # --------------------------
@@ -46,13 +45,15 @@ CONFIG_PATH = Path("config/params.yaml")
 with open(CONFIG_PATH, "r") as f:
     params_ = yaml.safe_load(f)
 
-INPUT_CSV = Path(params_["generate"]["input"])
+# Pick train and test CSV separately
+TRAIN_CSV = Path(params_["generate"]["input"][0])
+TEST_CSV = Path(params_["generate"]["input"][1])
+
 OUTPUT_PATH = Path(params_["generate"]["output"])
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_emergency.csv"
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 torch.set_num_threads(num_processes)
-
 
 # --------------------------
 # Synthetic Generator (IPF)
@@ -90,17 +91,15 @@ class SyntheticGenerator:
 
         return synthetic
 
-
 # --------------------------
 # ML Generator (ACTIVE)
 # --------------------------
 class GenerateML:
-    def __init__(self):
-        self.train_path = Path(params_["train"]["input"][0])
-        self.test_path = Path(params_["train"]["input"][1])
+    def __init__(self, train_path, test_path):
+        self.train_path = Path(train_path)
+        self.test_path = Path(test_path)
 
     def train_and_generate(self, synthetic_demographics, target_col="APR_MDC"):
-
         # Load data
         df_train = pd.read_csv(self.train_path)
         df_test = pd.read_csv(self.test_path)
@@ -118,11 +117,7 @@ class GenerateML:
         for col in categorical_cols:
             le = LabelEncoder()
             X_train[col] = le.fit_transform(X_train[col].astype(str))
-
-            X_test[col] = X_test[col].map(
-                lambda x: le.transform([x])[0] if x in le.classes_ else -1
-            )
-
+            X_test[col] = X_test[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
             encoders[col] = le
 
         # Encode target
@@ -134,7 +129,6 @@ class GenerateML:
         # Models
         # =========================
         experiments = {
-
             "xgboost": {
                 "model": XGBClassifier(
                     objective="multi:softprob",
@@ -142,25 +136,15 @@ class GenerateML:
                     tree_method="hist",
                     random_state=42
                 ),
-                "params": {
-                    "n_estimators": [200, 400]
-                }
+                "params": {"n_estimators": [200, 400]}
             },
-
-            # 🔒 Uncomment later
             "random_forest": {
                 "model": RandomForestClassifier(random_state=42),
-                "params": {
-                    "n_estimators": [200, 400]
-                }
+                "params": {"n_estimators": [200, 400]}
             },
-
-            # 🔒 Uncomment later
             "logistic_regression": {
                 "model": LogisticRegression(max_iter=1000),
-                "params": {
-                    "C": [0.1, 1, 10]
-                }
+                "params": {"C": [0.1, 1, 10]}
             }
         }
 
@@ -171,29 +155,18 @@ class GenerateML:
 
         for name, exp in experiments.items():
             with mlflow.start_run(run_name=name):
-
                 print(f"\n🚀 Training {name}")
-
-                grid = GridSearchCV(
-                    exp["model"],
-                    exp["params"],
-                    scoring="f1_weighted",
-                    cv=3,
-                    n_jobs=-1
-                )
-
+                grid = GridSearchCV(exp["model"], exp["params"], scoring="accuracy", cv=3, n_jobs=-1)
                 grid.fit(X_train, y_train)
 
                 y_pred = grid.predict(X_test)
-
-                f1 = f1_score(y_test, y_pred, average="weighted")
+                acc = accuracy_score(y_test, y_pred)
                 print(classification_report(y_test, y_pred))
-
                 mlflow.log_params(grid.best_params_)
-                mlflow.log_metric("f1_weighted", f1)
+                mlflow.log_metric("accuracy", acc)
 
-                if f1 > best_score:
-                    best_score = f1
+                if acc > best_score:
+                    best_score = acc
                     best_model = grid.best_estimator_
 
         # =========================
@@ -203,43 +176,14 @@ class GenerateML:
         df_demo = df_demo[X_train.columns]
 
         for col, le in encoders.items():
-            df_demo[col] = df_demo[col].map(
-                lambda x: le.transform([x])[0] if x in le.classes_ else -1
-            )
+            df_demo[col] = df_demo[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
 
         probs = best_model.predict_proba(df_demo)
 
-        preds = [
-            np.random.choice(target_encoder.classes_, p=p)
-            for p in probs
-        ]
-
+        preds = [np.random.choice(target_encoder.classes_, p=p) for p in probs]
         df_demo[target_col] = target_encoder.inverse_transform(preds)
 
         return df_demo
-
-
-# --------------------------
-# CTGAN (COMMENTED FOR LATER)
-# --------------------------
-"""
-class CTGANGenerator:
-
-    def train(self, df, features, target_col="APR_MDC"):
-        columns = features + [target_col]
-
-        for col in columns:
-            df[col] = df[col].astype("category")
-
-        ctgan = CTGAN(epochs=10)
-        ctgan.fit(df[columns], discrete_columns=columns)
-
-        return ctgan
-
-    def generate(self, ctgan, n):
-        return ctgan.sample(n)
-"""
-
 
 # --------------------------
 # Main Execution
@@ -247,7 +191,7 @@ class CTGANGenerator:
 def main():
     print("⚙️ Starting pipeline...")
 
-    df_real = pd.read_csv(INPUT_CSV, dtype=str)
+    df_real = pd.read_csv(TRAIN_CSV, dtype=str)
 
     if sample_rows:
         df_real = df_real.sample(sample_rows, random_state=42)
@@ -259,35 +203,23 @@ def main():
 
     target_col = "APR_MDC"
 
-    target_marginals = {
-        col: df_real[col].value_counts().to_dict()
-        for col in features
-    }
+    target_marginals = {col: df_real[col].value_counts().to_dict() for col in features}
 
-    synth = SyntheticGenerator(INPUT_CSV)
+    synth = SyntheticGenerator(TRAIN_CSV)
 
     print("🔹 Step 1: IPF")
-    synthetic_demographics = synth.generate_ipf(
-        df_real, features, target_marginals
-    )
+    synthetic_demographics = synth.generate_ipf(df_real, features, target_marginals)
 
     print("🔹 Step 2: ML Generation")
-    ml_gen = GenerateML()
+    ml_gen = GenerateML(TRAIN_CSV, TEST_CSV)
 
-    synthetic_dataset = ml_gen.train_and_generate(
-        synthetic_demographics,
-        target_col
-    )
-
-    # 🔒 Optional CTGAN later
-    # ctgan = CTGANGenerator().train(df_real, features)
-    # synthetic_dataset = ctgan.generate(n_samples)
+    synthetic_dataset = ml_gen.train_and_generate(synthetic_demographics, target_col)
 
     print("🔹 Saving...")
     synthetic_dataset.to_csv(OUTPUT_CSV, index=False)
 
     print(f"✅ Done. Saved to {OUTPUT_CSV}")
 
-
 if __name__ == "__main__":
     main()
+    
