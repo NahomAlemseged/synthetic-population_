@@ -3,192 +3,291 @@ import pandas as pd
 import numpy as np
 import torch
 import yaml
-import os
-import time
 from pathlib import Path
-from ctgan import CTGAN
+from joblib import parallel_backend
+
+# from ctgan import CTGAN   # 🔒 Uncomment if using CTGAN
+import time
+
+import mlflow
+import mlflow.sklearn
+
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import classification_report, accuracy_score, f1_score
+
+from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier   # 🔒 optional
+from sklearn.linear_model import LogisticRegression   # 🔒 optional
+
 
 # --------------------------
 # Command line arguments
 # --------------------------
-parser = argparse.ArgumentParser(description="Synthetic population generation with CTGAN (GPU optimized)")
-parser.add_argument("--n_samples", type=int, required=True, help="Number of samples to generate")
-parser.add_argument("--epochs", type=int, default=5, help="Number of CTGAN training epochs")
-parser.add_argument("--sample_rows", type=int, default=None, help="Optional: subset of rows for testing")
-parser.add_argument("--num_processes", type=int, default=None, help="Number of CPU threads for IPF weighting")
+parser = argparse.ArgumentParser(description="Synthetic population generation")
+parser.add_argument("--n_samples", type=int, required=True)
+parser.add_argument("--epochs", type=int, default=5)
+parser.add_argument("--num_processes", type=int, default=1)
+parser.add_argument("--sample_rows", type=int, default=None)
 args = parser.parse_args()
 
 n_samples = args.n_samples
 epochs = args.epochs
+num_processes = args.num_processes
 sample_rows = args.sample_rows
-num_processes = args.num_processes or os.cpu_count()
+
 
 # --------------------------
-# GPU Setup
+# Load YAML config
 # --------------------------
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"🚀 Using device: {device}")
-if device.type == "cuda":
-    torch.backends.cudnn.benchmark = True
-    torch.set_num_threads(4)  # limit CPU threads for A100
-else:
-    torch.set_num_threads(num_processes)
+CONFIG_PATH = Path("config/params.yaml")
 
-# --------------------------
-# Load config
-# --------------------------
-CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 with open(CONFIG_PATH, "r") as f:
     params_ = yaml.safe_load(f)
 
 INPUT_CSV = Path(params_["generate"]["input"])
 OUTPUT_PATH = Path(params_["generate"]["output"])
-OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_emergency.csv"
+OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+
+torch.set_num_threads(num_processes)
+
 
 # --------------------------
-# Synthetic Generator Class
+# Synthetic Generator (IPF)
 # --------------------------
 class SyntheticGenerator:
-    def __init__(self, n_samples):
-        self.n_samples = n_samples
+    def __init__(self, input_csv):
+        self.input_csv = input_csv
 
     def generate_ipf(self, df, features, target_marginals, tol=1e-5, max_iter=100):
-        """
-        Generate synthetic demographics only using IPF.
-        APR_MDC will be removed if present.
-        """
         df = df.copy()
         df["weight"] = 1.0
 
         for iteration in range(max_iter):
             old_weights = df["weight"].copy()
+
             for feat in features:
                 current = df.groupby(feat)["weight"].sum()
                 desired = pd.Series(target_marginals[feat])
                 ratios = desired / current
                 df["weight"] *= df[feat].map(ratios)
+
             if np.allclose(df["weight"], old_weights, atol=tol):
                 print(f"✅ IPF converged at iteration {iteration}")
                 break
 
-        synthetic_demographics = df.sample(
-            n=min(self.n_samples, len(df)),
+        synthetic = df.sample(
+            n=min(n_samples, len(df)),
             weights="weight",
             replace=True,
             random_state=42
         ).drop(columns=["weight"])
 
-        # Remove APR_MDC if present
-        if "APR_MDC" in synthetic_demographics.columns:
-            synthetic_demographics = synthetic_demographics.drop(columns=["APR_MDC"])
-            print("⚠️ Removed APR_MDC from IPF demographics")
+        if "APR_MDC" in synthetic.columns:
+            synthetic = synthetic.drop(columns=["APR_MDC"])
 
-        return synthetic_demographics
+        return synthetic
 
-    def learn_ctgan(self, df_real, features, target_col="APR_MDC", epochs=5):
-        """
-        Train CTGAN on features + APR_MDC.
-        """
-        columns_to_use = features + [target_col]
-        df_real = df_real.copy()
-        # strip column whitespace
-        df_real.columns = df_real.columns.str.strip()
-        if target_col not in df_real.columns:
-            raise KeyError(f"{target_col} not found in input CSV columns: {df_real.columns.tolist()}")
 
-        df_ctgan = df_real[columns_to_use].copy()
-        for col in columns_to_use:
-            df_ctgan[col] = df_ctgan[col].astype("category")
+# --------------------------
+# ML Generator (ACTIVE)
+# --------------------------
+class GenerateML:
+    def __init__(self):
+        self.train_path = Path(params_["train"]["input"][0])
+        self.test_path = Path(params_["train"]["input"][1])
 
-        print(f"🔥 Training CTGAN on {len(df_ctgan):,} rows and {len(columns_to_use)} columns...")
+    def train_and_generate(self, synthetic_demographics, target_col="APR_MDC"):
 
-        # GPU batch tuning for A100
-        batch_size = 1024
-        pac = 10
-        batch_size -= batch_size % pac  # ensure divisible by pac
+        # Load data
+        df_train = pd.read_csv(self.train_path)
+        df_test = pd.read_csv(self.test_path)
 
-        ctgan = CTGAN(
-            epochs=epochs,
-            batch_size=batch_size,
-            embedding_dim=128,
-            generator_dim=(256, 256),
-            discriminator_dim=(256, 256),
-            verbose=True,
-            cuda=(device.type == "cuda")
-        )
+        X_train = df_train.drop(columns=[target_col])
+        y_train = df_train[target_col]
 
-        ctgan.fit(df_ctgan, discrete_columns=columns_to_use)
-        print("✅ CTGAN training complete!")
+        X_test = df_test.drop(columns=[target_col])
+        y_test = df_test[target_col]
+
+        # Encode features
+        categorical_cols = X_train.select_dtypes(include="object").columns
+        encoders = {}
+
+        for col in categorical_cols:
+            le = LabelEncoder()
+            X_train[col] = le.fit_transform(X_train[col].astype(str))
+
+            X_test[col] = X_test[col].map(
+                lambda x: le.transform([x])[0] if x in le.classes_ else -1
+            )
+
+            encoders[col] = le
+
+        # Encode target
+        target_encoder = LabelEncoder()
+        y_train = target_encoder.fit_transform(y_train.astype(str))
+        y_test = target_encoder.transform(y_test.astype(str))
+
+        # =========================
+        # Models
+        # =========================
+        experiments = {
+
+            "xgboost": {
+                "model": XGBClassifier(
+                    objective="multi:softprob",
+                    eval_metric="mlogloss",
+                    tree_method="hist",
+                    random_state=42
+                ),
+                "params": {
+                    "n_estimators": [200, 400]
+                }
+            },
+
+            # 🔒 Uncomment later
+            "random_forest": {
+                "model": RandomForestClassifier(random_state=42),
+                "params": {
+                    "n_estimators": [200, 400]
+                }
+            },
+
+            # 🔒 Uncomment later
+            "logistic_regression": {
+                "model": LogisticRegression(max_iter=1000),
+                "params": {
+                    "C": [0.1, 1, 10]
+                }
+            }
+        }
+
+        best_model = None
+        best_score = 0
+
+        mlflow.set_experiment("APR_MDC_multiclass")
+
+        for name, exp in experiments.items():
+            with mlflow.start_run(run_name=name):
+
+                print(f"\n🚀 Training {name}")
+
+                grid = GridSearchCV(
+                    exp["model"],
+                    exp["params"],
+                    scoring="f1_weighted",
+                    cv=3,
+                    n_jobs=-1
+                )
+
+                grid.fit(X_train, y_train)
+
+                y_pred = grid.predict(X_test)
+
+                f1 = f1_score(y_test, y_pred, average="weighted")
+                print(classification_report(y_test, y_pred))
+
+                mlflow.log_params(grid.best_params_)
+                mlflow.log_metric("f1_weighted", f1)
+
+                if f1 > best_score:
+                    best_score = f1
+                    best_model = grid.best_estimator_
+
+        # =========================
+        # Generate synthetic target
+        # =========================
+        df_demo = synthetic_demographics.copy()
+        df_demo = df_demo[X_train.columns]
+
+        for col, le in encoders.items():
+            df_demo[col] = df_demo[col].map(
+                lambda x: le.transform([x])[0] if x in le.classes_ else -1
+            )
+
+        probs = best_model.predict_proba(df_demo)
+
+        preds = [
+            np.random.choice(target_encoder.classes_, p=p)
+            for p in probs
+        ]
+
+        df_demo[target_col] = target_encoder.inverse_transform(preds)
+
+        return df_demo
+
+
+# --------------------------
+# CTGAN (COMMENTED FOR LATER)
+# --------------------------
+"""
+class CTGANGenerator:
+
+    def train(self, df, features, target_col="APR_MDC"):
+        columns = features + [target_col]
+
+        for col in columns:
+            df[col] = df[col].astype("category")
+
+        ctgan = CTGAN(epochs=10)
+        ctgan.fit(df[columns], discrete_columns=columns)
+
         return ctgan
 
-    def generate_gan(self, ctgan, synthetic_demographics, target_col="APR_MDC"):
-        """
-        Generate APR_MDC from CTGAN and merge with IPF demographics
-        """
-        df_demo = synthetic_demographics.copy()
-        for col in df_demo.columns:
-            df_demo[col] = df_demo[col].astype("category")
+    def generate(self, ctgan, n):
+        return ctgan.sample(n)
+"""
 
-        synthetic_target = ctgan.sample(len(df_demo))
-
-        # drop APR_MDC in demographics if present
-        if target_col in df_demo.columns:
-            df_demo = df_demo.drop(columns=[target_col])
-
-        df_final = pd.concat(
-            [df_demo.reset_index(drop=True),
-             synthetic_target[[target_col]].reset_index(drop=True)],
-            axis=1
-        )
-        print(f"✅ Final synthetic dataset shape: {df_final.shape}")
-        return df_final
 
 # --------------------------
-# Main execution
+# Main Execution
 # --------------------------
 def main():
-    print("⚙️ Starting GPU-optimized synthetic generation pipeline...")
-    start_time = time.time()
+    print("⚙️ Starting pipeline...")
 
-    # Load real dataset
     df_real = pd.read_csv(INPUT_CSV, dtype=str)
-    df_real.columns = df_real.columns.str.strip()
-    print(f"📂 Loaded real dataset with {len(df_real):,} rows")
 
     if sample_rows:
         df_real = df_real.sample(sample_rows, random_state=42)
-        print(f"⚡ Using subset of {len(df_real):,} rows for faster training")
 
-    # Features and target
     features = [
         "SEX_CODE", "PAT_AGE", "RACE", "ETHNICITY",
         "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION"
     ]
+
     target_col = "APR_MDC"
 
-    # Create marginals for IPF
-    target_marginals = {col: df_real[col].value_counts().to_dict() for col in features}
+    target_marginals = {
+        col: df_real[col].value_counts().to_dict()
+        for col in features
+    }
 
-    synth = SyntheticGenerator(n_samples)
+    synth = SyntheticGenerator(INPUT_CSV)
 
-    # Step 1: IPF
-    print("🔹 Step 1: IPF demographics")
-    synthetic_demographics = synth.generate_ipf(df_real, features, target_marginals)
+    print("🔹 Step 1: IPF")
+    synthetic_demographics = synth.generate_ipf(
+        df_real, features, target_marginals
+    )
 
-    # Step 2: CTGAN
-    print("🔹 Step 2: CTGAN (GPU)")
-    ctgan_model = synth.learn_ctgan(df_real, features, target_col=target_col, epochs=epochs)
+    print("🔹 Step 2: ML Generation")
+    ml_gen = GenerateML()
 
-    # Step 3: Generate APR_MDC via GAN
-    print("🔹 Step 3: Generate APR_MDC")
-    synthetic_dataset = synth.generate_gan(ctgan_model, synthetic_demographics, target_col=target_col)
+    synthetic_dataset = ml_gen.train_and_generate(
+        synthetic_demographics,
+        target_col
+    )
 
-    # Step 4: Save final CSV
+    # 🔒 Optional CTGAN later
+    # ctgan = CTGANGenerator().train(df_real, features)
+    # synthetic_dataset = ctgan.generate(n_samples)
+
+    print("🔹 Saving...")
     synthetic_dataset.to_csv(OUTPUT_CSV, index=False)
-    end_time = time.time()
-    print(f"⏱ Total time: {end_time - start_time:.2f} sec")
-    print(f"💾 Synthetic dataset saved at: {OUTPUT_CSV}")
+
+    print(f"✅ Done. Saved to {OUTPUT_CSV}")
+
 
 if __name__ == "__main__":
     main()
