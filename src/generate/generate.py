@@ -91,99 +91,99 @@ class SyntheticGenerator:
 
         return synthetic
 
-# --------------------------
-# ML Generator (ACTIVE)
-# --------------------------
-class GenerateML:
-    def __init__(self, train_path, test_path):
-        self.train_path = Path(train_path)
-        self.test_path = Path(test_path)
+# # --------------------------
+# # ML Generator (ACTIVE)
+# # --------------------------
+# class GenerateML:
+#     def __init__(self, train_path, test_path):
+#         self.train_path = Path(train_path)
+#         self.test_path = Path(test_path)
 
-    def train_and_generate(self, synthetic_demographics, target_col="APR_MDC"):
-        # Load data
-        df_train = pd.read_csv(self.train_path)
-        df_test = pd.read_csv(self.test_path)
+#     def train_and_generate(self, synthetic_demographics, target_col="APR_MDC"):
+#         # Load data
+#         df_train = pd.read_csv(self.train_path)
+#         df_test = pd.read_csv(self.test_path)
 
-        X_train = df_train.drop(columns=[target_col])
-        y_train = df_train[target_col]
+#         X_train = df_train.drop(columns=[target_col])
+#         y_train = df_train[target_col]
 
-        X_test = df_test.drop(columns=[target_col])
-        y_test = df_test[target_col]
+#         X_test = df_test.drop(columns=[target_col])
+#         y_test = df_test[target_col]
 
-        # Encode features
-        categorical_cols = X_train.select_dtypes(include="object").columns
-        encoders = {}
+#         # Encode features
+#         categorical_cols = X_train.select_dtypes(include="object").columns
+#         encoders = {}
 
-        for col in categorical_cols:
-            le = LabelEncoder()
-            X_train[col] = le.fit_transform(X_train[col].astype(str))
-            X_test[col] = X_test[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
-            encoders[col] = le
+#         for col in categorical_cols:
+#             le = LabelEncoder()
+#             X_train[col] = le.fit_transform(X_train[col].astype(str))
+#             X_test[col] = X_test[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
+#             encoders[col] = le
 
-        # Encode target
-        target_encoder = LabelEncoder()
-        y_train = target_encoder.fit_transform(y_train.astype(str))
-        y_test = target_encoder.transform(y_test.astype(str))
+#         # Encode target
+#         target_encoder = LabelEncoder()
+#         y_train = target_encoder.fit_transform(y_train.astype(str))
+#         y_test = target_encoder.transform(y_test.astype(str))
 
-        # =========================
-        # Models
-        # =========================
-        experiments = {
-            "xgboost": {
-                "model": XGBClassifier(
-                    objective="multi:softprob",
-                    eval_metric="mlogloss",
-                    tree_method="hist",
-                    random_state=42
-                ),
-                "params": {"n_estimators": [200, 400]}
-            },
-            "random_forest": {
-                "model": RandomForestClassifier(random_state=42),
-                "params": {"n_estimators": [200, 400]}
-            },
-            "logistic_regression": {
-                "model": LogisticRegression(max_iter=1000),
-                "params": {"C": [0.1, 1, 10]}
-            }
-        }
+#         # =========================
+#         # Models
+#         # =========================
+#         experiments = {
+#             "xgboost": {
+#                 "model": XGBClassifier(
+#                     objective="multi:softprob",
+#                     eval_metric="mlogloss",
+#                     tree_method="hist",
+#                     random_state=42
+#                 ),
+#                 "params": {"n_estimators": [200, 400]}
+#             },
+#             "random_forest": {
+#                 "model": RandomForestClassifier(random_state=42),
+#                 "params": {"n_estimators": [200, 400]}
+#             },
+#             "logistic_regression": {
+#                 "model": LogisticRegression(max_iter=1000),
+#                 "params": {"C": [0.1, 1, 10]}
+#             }
+#         }
 
-        best_model = None
-        best_score = 0
+#         best_model = None
+#         best_score = 0
 
-        mlflow.set_experiment("APR_MDC_multiclass")
+#         mlflow.set_experiment("APR_MDC_multiclass")
 
-        for name, exp in experiments.items():
-            with mlflow.start_run(run_name=name):
-                print(f"\n🚀 Training {name}")
-                grid = GridSearchCV(exp["model"], exp["params"], scoring="accuracy", cv=3, n_jobs=-1)
-                grid.fit(X_train, y_train)
+#         for name, exp in experiments.items():
+#             with mlflow.start_run(run_name=name):
+#                 print(f"\n🚀 Training {name}")
+#                 grid = GridSearchCV(exp["model"], exp["params"], scoring="accuracy", cv=3, n_jobs=-1)
+#                 grid.fit(X_train, y_train)
 
-                y_pred = grid.predict(X_test)
-                acc = accuracy_score(y_test, y_pred)
-                print(classification_report(y_test, y_pred))
-                mlflow.log_params(grid.best_params_)
-                mlflow.log_metric("accuracy", acc)
+#                 y_pred = grid.predict(X_test)
+#                 acc = accuracy_score(y_test, y_pred)
+#                 print(classification_report(y_test, y_pred))
+#                 mlflow.log_params(grid.best_params_)
+#                 mlflow.log_metric("accuracy", acc)
 
-                if acc > best_score:
-                    best_score = acc
-                    best_model = grid.best_estimator_
+#                 if acc > best_score:
+#                     best_score = acc
+#                     best_model = grid.best_estimator_
 
-        # =========================
-        # Generate synthetic target
-        # =========================
-        df_demo = synthetic_demographics.copy()
-        df_demo = df_demo[X_train.columns]
+#         # =========================
+#         # Generate synthetic target
+#         # =========================
+#         df_demo = synthetic_demographics.copy()
+#         df_demo = df_demo[X_train.columns]
 
-        for col, le in encoders.items():
-            df_demo[col] = df_demo[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
+#         for col, le in encoders.items():
+#             df_demo[col] = df_demo[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
 
-        probs = best_model.predict_proba(df_demo)
+#         probs = best_model.predict_proba(df_demo)
 
-        preds = [np.random.choice(target_encoder.classes_, p=p) for p in probs]
-        df_demo[target_col] = target_encoder.inverse_transform(preds)
+#         preds = [np.random.choice(target_encoder.classes_, p=p) for p in probs]
+#         df_demo[target_col] = target_encoder.inverse_transform(preds)
 
-        return df_demo
+#         return df_demo
 
 # --------------------------
 # Main Execution
