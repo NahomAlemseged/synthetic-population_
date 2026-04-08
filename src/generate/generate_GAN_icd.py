@@ -154,9 +154,9 @@ def main():
 
     features = [
         "SEX_CODE", "PAT_AGE", "RACE", "ETHNICITY",
-        "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION"
+        "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION","APR_MDC"
     ]
-    target_col = "APR_MDC"
+    target_col = "PRINC_DIAG_CODE"
 
     target_marginals = {col: df_real[col].value_counts().to_dict() for col in features}
 
