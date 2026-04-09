@@ -35,8 +35,20 @@ ingestion:
 # ==============================
 generate:
   input: "/content/drive/MyDrive/data_THCIC/gold/train.csv"
+  output: "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/"  # synthetic data on Drive
+
+generate_icd:
+  input: 
+    -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient.csv"
+    
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/"  # synthetic data on Drive
 
+# INPUT_CSV = Path(params["generate_icd"]["input"])
+# OUTPUT_PATH = Path(params["generate_icd"]["output"])
+# OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+
+# OUTPUT_CSV = OUTPUT_PATH / "synthetic_icd.csv"
 # ==============================
 # Validation
 # ==============================
@@ -51,7 +63,7 @@ validate:
 # ==============================
 train:
   input: 
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_emergency.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
 
@@ -60,7 +72,7 @@ train:
 # ==============================
 evaluate:
   input:
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_emergency.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
     - "synthetic-population_/model/model.pkl"  # Model from repo
