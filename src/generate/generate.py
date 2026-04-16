@@ -154,8 +154,16 @@ def main():
 
     features = [
         "SEX_CODE", "PAT_AGE", "RACE", "ETHNICITY",
-        "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION"
+        "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION","FIRST_PAYMENT_SRC",'EMERGENCY_DEPT_FLAG'
     ]
+
+#     BASE_COLUMNS = [
+#     'RECORD_ID', 'EMERGENCY_DEPT_FLAG','DISCHARGE', 'TYPE_OF_ADMISSION', 'SOURCE_OF_ADMISSION',
+#     'PAT_ZIP', 'PAT_COUNTY', 'PUBLIC_HEALTH_REGION', 'PAT_STATUS',
+#     'SEX_CODE', 'RACE', 'ETHNICITY', 'ADMIT_WEEKDAY', 'LENGTH_OF_STAY',
+#     'PAT_AGE', 'FIRST_PAYMENT_SRC','PRINC_DIAG_CODE'
+# ]
+
     target_col = "APR_MDC"
 
     target_marginals = {col: df_real[col].value_counts().to_dict() for col in features}
