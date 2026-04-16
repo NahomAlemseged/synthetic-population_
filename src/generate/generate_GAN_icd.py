@@ -2,121 +2,178 @@ import pandas as pd
 import yaml
 from pathlib import Path
 from ctgan import CTGAN
+from joblib import parallel_backend
+import time
+
 
 # --------------------------
 # Load CONFIG
 # --------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-CONFIG_PATH = BASE_DIR / "config" / "params.yaml"
+CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 
 with open(CONFIG_PATH, "r") as f:
     params = yaml.safe_load(f)
 
-# Train dataset [0]
-TRAIN_PATH = Path(params["generate_icd"]["input"])
+# ✅ FIX: correctly parse list inputs
+train_path = params["generate_icd"]["input"][0]
+pop_path = params["generate_icd"]["input"][1]
 
-# Synthetic population [1]
-POP_PATH = Path(params["generate_icd"]["input_population"])
+TRAIN_PATH = Path(train_path)
+POP_PATH = Path(pop_path)
 
 OUTPUT_PATH = Path(params["generate_icd"]["output"])
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd.csv"
 
-# --------------------------
-# Load Data
-# --------------------------
-df_train = pd.read_csv(TRAIN_PATH, dtype=str)
-df_pop = pd.read_csv(POP_PATH, dtype=str)
-
-print(f"Train: {df_train.shape}")
-print(f"Population: {df_pop.shape}")
 
 # --------------------------
-# Features
+# ICD Generator Class
 # --------------------------
-features = [
-    "SEX_CODE",
-    "PAT_AGE",
-    "RACE",
-    "ETHNICITY",
-    "PAT_ZIP",
-    "PAT_COUNTY",
-    "PUBLIC_HEALTH_REGION",
-    "APR_MDC"
-]
+class ICDGenerator:
+    def __init__(self, train_path, pop_path):
+        self.train_path = train_path
+        self.pop_path = pop_path
 
-target_col = "PRINC_DIAG_CODE"
-columns = features + [target_col]
+    def load_data(self):
+        df_train = pd.read_csv(self.train_path, dtype=str)
+        df_pop = pd.read_csv(self.pop_path, dtype=str)
+
+        print(f"📂 Train shape: {df_train.shape}")
+        print(f"📂 Population shape: {df_pop.shape}")
+
+        return df_train, df_pop
+
+    def prepare_training_data(self, df_train, features, target_col):
+        columns = features + [target_col]
+
+        df_train = df_train[columns].dropna()
+
+        for col in columns:
+            df_train[col] = df_train[col].astype("category")
+
+        return df_train
+
+    def train_ctgan(self, df_train, columns, epochs=10):
+        print(f"🚀 Training CTGAN on {len(df_train):,} rows...")
+
+        batch_size = 100
+        pac = 10
+
+        # ✅ ensure valid batch size
+        if batch_size % pac != 0:
+            batch_size = batch_size - (batch_size % pac)
+
+        ctgan = CTGAN(
+            epochs=epochs,
+            batch_size=batch_size,
+            verbose=True
+        )
+
+        with parallel_backend("threading", n_jobs=4):
+            ctgan.fit(df_train, discrete_columns=columns)
+
+        print("✅ CTGAN training complete")
+        return ctgan
+
+    def generate_pool(self, ctgan, n_samples):
+        print("🔹 Generating synthetic ICD pool...")
+        return ctgan.sample(n_samples)
+
+    def match_icd(self, df_pop, synthetic_pool, target_col):
+        print("🔹 Matching ICD codes...")
+
+        # ✅ STRONGER MATCHING (important fix)
+        merge_cols = [
+            "APR_MDC",
+            "SEX_CODE",
+            "PAT_AGE",
+            "RACE",
+            "ETHNICITY"
+        ]
+
+        df_merged = df_pop.merge(
+            synthetic_pool,
+            on=merge_cols,
+            how="left"
+        )
+
+        missing = df_merged[target_col].isna().sum()
+        print(f"⚠️ Missing ICD after merge: {missing}")
+
+        if missing > 0:
+            print("🔁 Filling missing with fallback sampling...")
+            fallback = synthetic_pool[target_col].sample(missing, replace=True).values
+            df_merged.loc[df_merged[target_col].isna(), target_col] = fallback
+
+        return df_merged
+
 
 # --------------------------
-# Prepare training data
+# Main Execution
 # --------------------------
-df_train = df_train[columns].dropna()
+def main():
+    print("⚙️ Starting ICD generation pipeline...")
 
-for col in columns:
-    df_train[col] = df_train[col].astype("category")
+    start_time = time.time()
 
-# --------------------------
-# Train CTGAN
-# --------------------------
-print("🚀 Training CTGAN...")
+    features = [
+        "SEX_CODE",
+        "PAT_AGE",
+        "RACE",
+        "ETHNICITY",
+        "PAT_ZIP",
+        "PAT_COUNTY",
+        "PUBLIC_HEALTH_REGION",
+        "APR_MDC"
+    ]
 
-ctgan = CTGAN(
-    epochs=10,
-    batch_size=100,
-    verbose=True
-)
+    target_col = "PRINC_DIAG_CODE"
 
-ctgan.fit(df_train, discrete_columns=columns)
+    generator = ICDGenerator(TRAIN_PATH, POP_PATH)
 
-print("✅ Training done")
+    # Step 1: Load data
+    df_train, df_pop = generator.load_data()
 
-# --------------------------
-# Generate LARGE synthetic pool
-# --------------------------
-print("🔹 Generating large ICD pool...")
+    # Step 2: Prepare training data
+    df_train_prepared = generator.prepare_training_data(
+        df_train, features, target_col
+    )
 
-synthetic_pool = ctgan.sample(len(df_pop) * 5)
+    columns = features + [target_col]
 
-# --------------------------
-# MATCHING STEP (KEY PART)
-# --------------------------
-print("🔹 Matching ICD to each row...")
+    # Step 3: Train CTGAN
+    ctgan_model = generator.train_ctgan(
+        df_train_prepared,
+        columns,
+        epochs=10
+    )
 
-# Keep only needed columns
-synthetic_pool = synthetic_pool[columns]
+    # Step 4: Generate synthetic pool
+    synthetic_pool = generator.generate_pool(
+        ctgan_model,
+        len(df_pop) * 5
+    )
 
-# Merge on key covariates
-merge_cols = ["APR_MDC", "SEX_CODE"]
+    synthetic_pool = synthetic_pool[columns]
 
-df_merged = df_pop.merge(
-    synthetic_pool,
-    on=merge_cols,
-    how="left"
-)
+    # Step 5: Match ICDs
+    df_final = generator.match_icd(
+        df_pop,
+        synthetic_pool,
+        target_col
+    )
 
-# --------------------------
-# Handle missing matches
-# --------------------------
-missing = df_merged[target_col].isna().sum()
-print(f"Missing ICD after merge: {missing}")
+    print(f"✅ Final dataset shape: {df_final.shape}")
 
-if missing > 0:
-    print("🔁 Filling missing with random samples...")
-    fallback = synthetic_pool[target_col].sample(missing, replace=True).values
-    df_merged.loc[df_merged[target_col].isna(), target_col] = fallback
+    # Step 6: Save
+    df_final.to_csv(OUTPUT_CSV, index=False)
 
-# --------------------------
-# Final dataset
-# --------------------------
-df_final = df_merged
+    end_time = time.time()
 
-print(f"✅ Final dataset: {df_final.shape}")
+    print(f"💾 Saved to: {OUTPUT_CSV}")
+    print(f"⏱️ Total time: {end_time - start_time:.2f} seconds")
 
-# --------------------------
-# Save
-# --------------------------
-df_final.to_csv(OUTPUT_CSV, index=False)
 
-print(f"💾 Saved to {OUTPUT_CSV}")
+if __name__ == "__main__":
+    main()
