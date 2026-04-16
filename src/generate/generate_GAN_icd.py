@@ -7,14 +7,13 @@ import time
 
 
 # --------------------------
-# Load CONFIG
+# CONFIG
 # --------------------------
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 
 with open(CONFIG_PATH, "r") as f:
     params = yaml.safe_load(f)
 
-# ✅ FIX: correctly parse list inputs
 train_path = params["generate_icd"]["input"][0]
 pop_path = params["generate_icd"]["input"][1]
 
@@ -26,6 +25,9 @@ OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd.csv"
 
+# 🔥 SAMPLE SIZE
+N_SAMPLES = 50000
+
 
 # --------------------------
 # ICD Generator Class
@@ -36,11 +38,20 @@ class ICDGenerator:
         self.pop_path = pop_path
 
     def load_data(self):
+        print(f"📂 Loading train: {self.train_path}")
+        print(f"📂 Loading population: {self.pop_path}")
+
+        if not self.train_path.exists():
+            raise FileNotFoundError(f"❌ Train file not found: {self.train_path}")
+
+        if not self.pop_path.exists():
+            raise FileNotFoundError(f"❌ Population file not found: {self.pop_path}")
+
         df_train = pd.read_csv(self.train_path, dtype=str)
         df_pop = pd.read_csv(self.pop_path, dtype=str)
 
-        print(f"📂 Train shape: {df_train.shape}")
-        print(f"📂 Population shape: {df_pop.shape}")
+        print(f"📊 Train shape: {df_train.shape}")
+        print(f"📊 Population shape: {df_pop.shape}")
 
         return df_train, df_pop
 
@@ -60,7 +71,6 @@ class ICDGenerator:
         batch_size = 100
         pac = 10
 
-        # ✅ ensure valid batch size
         if batch_size % pac != 0:
             batch_size = batch_size - (batch_size % pac)
 
@@ -77,13 +87,12 @@ class ICDGenerator:
         return ctgan
 
     def generate_pool(self, ctgan, n_samples):
-        print("🔹 Generating synthetic ICD pool...")
+        print(f"🔹 Generating synthetic ICD pool ({n_samples:,} rows)...")
         return ctgan.sample(n_samples)
 
     def match_icd(self, df_pop, synthetic_pool, target_col):
         print("🔹 Matching ICD codes...")
 
-        # ✅ STRONGER MATCHING (important fix)
         merge_cols = [
             "APR_MDC",
             "SEX_CODE",
@@ -103,7 +112,9 @@ class ICDGenerator:
 
         if missing > 0:
             print("🔁 Filling missing with fallback sampling...")
-            fallback = synthetic_pool[target_col].sample(missing, replace=True).values
+            fallback = synthetic_pool[target_col].sample(
+                missing, replace=True, random_state=42
+            ).values
             df_merged.loc[df_merged[target_col].isna(), target_col] = fallback
 
         return df_merged
@@ -135,6 +146,12 @@ def main():
     # Step 1: Load data
     df_train, df_pop = generator.load_data()
 
+    # 🔥 Step 1.5: SAMPLE 50K POPULATION
+    N = min(N_SAMPLES, len(df_pop))
+    df_pop = df_pop.sample(n=N, random_state=42)
+
+    print(f"⚡ Using {N:,} population rows")
+
     # Step 2: Prepare training data
     df_train_prepared = generator.prepare_training_data(
         df_train, features, target_col
@@ -149,10 +166,10 @@ def main():
         epochs=10
     )
 
-    # Step 4: Generate synthetic pool
+    # Step 4: Generate synthetic pool (slightly larger than needed)
     synthetic_pool = generator.generate_pool(
         ctgan_model,
-        len(df_pop) * 5
+        int(N * 2.5)
     )
 
     synthetic_pool = synthetic_pool[columns]
