@@ -75,7 +75,7 @@ class Evaluate:
                 f"{X.select_dtypes(include='object').columns.tolist()}"
             )
 
-        y = df_["APR_MDC"]
+        y = df_["PRINC_DIAG_CODE"]
         return X, y
 
 
@@ -117,7 +117,7 @@ class Evaluate:
 
         results = {}
 
-        # APR_MDC
+        # PRINC_DIAG_CODE
         results["PRINC_DIAG_CODE"] = self.dist_match(
             self.df_eval["PRINC_DIAG_CODE"].value_counts(normalize=True),
             self.df_train["PRINC_DIAG_CODE"].value_counts(normalize=True),
