@@ -6,8 +6,8 @@ import torch
 
 from pathlib import Path
 from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, f1_score, classification_report
-
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score, f1_score
 from xgboost import XGBClassifier
 
 # =========================
@@ -20,22 +20,43 @@ print(f"⚡ Using device: {DEVICE}")
 # Config
 # =========================
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
+
 with open(CONFIG_PATH) as f:
     params = yaml.safe_load(f)
 
 
+# =========================
+# SAFE FEATURE SET (NO LEAKAGE)
+# =========================
+SAFE_FEATURES_FOR_APR = [
+    "AGE",
+    "SEX",
+    "RACE",
+    "ADMISSION_TYPE",
+    "PAYOR_TYPE",
+    "ER_FLAG",
+    "ICU_FLAG",
+    "HOSPITAL_ID"
+]
+
+
+# =========================
+# Trainer
+# =========================
 class TwoModelTrainer:
 
     def __init__(self):
-        self.syn_path = params['train']['input']   # synthetic dataset
-        self.real_path = params['test']['input']   # real dataset
-        self.output_path = Path(params['train']['output'])
+        self.syn_path = params['train']['input'][0]
+        self.output_path = Path(params['train']['output'][0])
         self.output_path.mkdir(parents=True, exist_ok=True)
 
+        self.model_path = self.output_path / "two_model_pipeline.pkl"
+
     # =========================
-    # Preprocessing
+    # Preprocess
     # =========================
     def preprocess(self, df, encoders=None, fit=True):
+
         if encoders is None:
             encoders = {}
 
@@ -46,10 +67,8 @@ class TwoModelTrainer:
                 encoders[col] = le
             else:
                 if col in encoders:
-                    le = encoders[col]
-                    df[col] = le.transform(df[col].astype(str))
+                    df[col] = encoders[col].transform(df[col].astype(str))
                 else:
-                    # unseen column safety
                     df[col] = df[col].astype(str)
 
         return df, encoders
@@ -62,9 +81,9 @@ class TwoModelTrainer:
             objective="multi:softprob",
             num_class=n_classes,
             eval_metric="mlogloss",
-            tree_method="gpu_hist",
-            random_state=42,
-            n_estimators=300
+            tree_method="gpu_hist" if DEVICE == "GPU" else "hist",
+            n_estimators=300,
+            random_state=42
         )
 
     # =========================
@@ -72,96 +91,91 @@ class TwoModelTrainer:
     # =========================
     def train(self):
 
-        # -------------------------
-        # Load data
-        # -------------------------
-        df_syn = pd.read_csv(self.syn_path, low_memory=False)
-        df_real = pd.read_csv(self.real_path, low_memory=False)
+        df = pd.read_csv(self.syn_path, low_memory=False)
 
-        print(f">>> Synthetic rows: {len(df_syn)}")
-        print(f">>> Real rows: {len(df_real)}")
+        print(f">>> Synthetic rows: {len(df)}")
 
         target_mdc = "APR_MDC"
         target_icd = "PRINC_DIAG_CODE"
 
         # -------------------------
-        # Preprocess
+        # Encode all categorical
         # -------------------------
-        df_syn, encoders = self.preprocess(df_syn, fit=True)
-        df_real, _ = self.preprocess(df_real, encoders=encoders, fit=False)
+        df, encoders = self.preprocess(df, fit=True)
 
         # -------------------------
-        # Define feature sets
+        # SAFETY CHECK: ensure required features exist
         # -------------------------
-        base_cols = [
-            c for c in df_syn.columns
-            if c not in [target_mdc, target_icd]
-        ]
+        missing = [c for c in SAFE_FEATURES_FOR_APR if c not in df.columns]
+        if len(missing) > 0:
+            raise ValueError(f"Missing safe features: {missing}")
 
         # =========================
-        # MODEL 1: APR_MDC
+        # SPLIT SYNTHETIC DATA
         # =========================
-        print("\n🚀 Training APR_MDC model (synthetic)")
-
-        X_syn_mdc = df_syn[base_cols]
-        y_mdc_syn = df_syn[target_mdc]
-
-        X_real_mdc = df_real[base_cols]
-        y_mdc_real = df_real[target_mdc]
-
-        mdc_model = self.get_model(len(np.unique(y_mdc_syn)))
-        mdc_model.fit(X_syn_mdc, y_mdc_syn)
-
-        print("\n📊 Evaluating APR_MDC on REAL data")
-
-        y_mdc_pred = mdc_model.predict(X_real_mdc)
-
-        print(classification_report(y_mdc_real, y_mdc_pred))
-        print("Accuracy:", accuracy_score(y_mdc_real, y_mdc_pred))
-        print("F1:", f1_score(y_mdc_real, y_mdc_pred, average="weighted"))
+        train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
         # =========================
-        # MODEL 2: ICD
+        # MODEL 1: APR_MDC (NO ICD FEATURES)
         # =========================
-        print("\n🚀 Training ICD model (synthetic)")
+        print("\n🚀 Training APR_MDC model (leakage-safe)")
 
-        # IMPORTANT: APR is part of X
-        X_syn_icd = df_syn[base_cols + [target_mdc]]
-        y_icd_syn = df_syn[target_icd]
+        X_train = train_df[SAFE_FEATURES_FOR_APR]
+        y_train = train_df[target_mdc]
 
-        X_real_icd = df_real[base_cols + [target_mdc]]
-        y_icd_real = df_real[target_icd]
+        X_test = test_df[SAFE_FEATURES_FOR_APR]
+        y_test = test_df[target_mdc]
 
-        icd_model = self.get_model(len(np.unique(y_icd_syn)))
-        icd_model.fit(X_syn_icd, y_icd_syn)
+        mdc_model = self.get_model(len(np.unique(y_train)))
+        mdc_model.fit(X_train, y_train)
 
-        print("\n📊 Evaluating ICD on REAL data (using REAL APR)")
+        y_pred = mdc_model.predict(X_test)
 
-        y_icd_pred = icd_model.predict(X_real_icd)
-
-        print(classification_report(y_icd_real, y_icd_pred))
-        print("Accuracy:", accuracy_score(y_icd_real, y_icd_pred))
-        print("F1:", f1_score(y_icd_real, y_icd_pred, average="weighted"))
-
-       
+        print("\n📊 APR_MDC Evaluation (synthetic)")
+        print(classification_report(y_test, y_pred))
 
         # =========================
-        # Save
+        # ADD APR PREDICTION FOR ICD MODEL
+        # =========================
+        df["APR_MDC_PRED"] = mdc_model.predict(df[SAFE_FEATURES_FOR_APR])
+
+        # =========================
+        # MODEL 2: ICD (USES APR ONLY, NOT RAW ICD FEATURES)
+        # =========================
+        print("\n🚀 Training ICD model")
+
+        icd_features = SAFE_FEATURES_FOR_APR + ["APR_MDC_PRED"]
+
+        X_train_icd = df.loc[train_df.index, icd_features]
+        y_train_icd = train_df[target_icd]
+
+        X_test_icd = df.loc[test_df.index, icd_features]
+        y_test_icd = test_df[target_icd]
+
+        icd_model = self.get_model(len(np.unique(y_train_icd)))
+        icd_model.fit(X_train_icd, y_train_icd)
+
+        y_pred_icd = icd_model.predict(X_test_icd)
+
+        print("\n📊 ICD Evaluation (synthetic)")
+        print(classification_report(y_test_icd, y_pred_icd))
+
+        # =========================
+        # SAVE MODELS
         # =========================
         joblib.dump({
             "mdc_model": mdc_model,
             "icd_model": icd_model,
             "encoders": encoders,
-            "base_features": base_cols
-        }, self.output_path / "two_model_pipeline.pkl")
+            "safe_features": SAFE_FEATURES_FOR_APR
+        }, self.model_path)
 
-        print("\n✅ Models saved successfully")
+        print(f"\n✅ Saved pipeline → {self.model_path}")
 
 
-def main():
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
     trainer = TwoModelTrainer()
     trainer.train()
-
-
-if __name__ == "__main__":
-    main()
