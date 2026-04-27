@@ -7,7 +7,7 @@ import torch
 from pathlib import Path
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score, f1_score
+from sklearn.metrics import classification_report
 from xgboost import XGBClassifier
 
 # =========================
@@ -24,19 +24,19 @@ CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 with open(CONFIG_PATH) as f:
     params = yaml.safe_load(f)
 
-
 # =========================
-# SAFE FEATURE SET (NO LEAKAGE)
+# SAFE FEATURES (NO LEAKAGE)
 # =========================
-SAFE_FEATURES_FOR_APR = [
-    "AGE",
-    "SEX",
+FEATURES = [
+    "SEX_CODE",
+    "PAT_AGE",
     "RACE",
-    "ADMISSION_TYPE",
-    "PAYOR_TYPE",
-    "ER_FLAG",
-    "ICU_FLAG",
-    "HOSPITAL_ID"
+    "ETHNICITY",
+    "PAT_ZIP",
+    "PAT_COUNTY",
+    "PUBLIC_HEALTH_REGION",
+    "FIRST_PAYMENT_SRC",
+    "EMERGENCY_DEPT_FLAG"
 ]
 
 
@@ -52,30 +52,31 @@ class TwoModelTrainer:
 
         self.model_path = self.output_path / "two_model_pipeline.pkl"
 
-    # =========================
-    # Preprocess
-    # =========================
+    # -------------------------
+    # Encoding
+    # -------------------------
     def preprocess(self, df, encoders=None, fit=True):
 
         if encoders is None:
             encoders = {}
 
-        for col in df.select_dtypes(include='object').columns:
-            if fit:
-                le = LabelEncoder()
-                df[col] = le.fit_transform(df[col].astype(str))
-                encoders[col] = le
-            else:
-                if col in encoders:
-                    df[col] = encoders[col].transform(df[col].astype(str))
+        for col in df.columns:
+            if df[col].dtype == "object":
+                if fit:
+                    le = LabelEncoder()
+                    df[col] = le.fit_transform(df[col].astype(str))
+                    encoders[col] = le
                 else:
-                    df[col] = df[col].astype(str)
+                    if col in encoders:
+                        df[col] = encoders[col].transform(df[col].astype(str))
+                    else:
+                        df[col] = df[col].astype(str)
 
         return df, encoders
 
-    # =========================
+    # -------------------------
     # Model
-    # =========================
+    # -------------------------
     def get_model(self, n_classes):
         return XGBClassifier(
             objective="multi:softprob",
@@ -86,65 +87,54 @@ class TwoModelTrainer:
             random_state=42
         )
 
-    # =========================
+    # -------------------------
     # Train
-    # =========================
+    # -------------------------
     def train(self):
 
         df = pd.read_csv(self.syn_path, low_memory=False)
-
         print(f">>> Synthetic rows: {len(df)}")
 
         target_mdc = "APR_MDC"
         target_icd = "PRINC_DIAG_CODE"
 
-        # -------------------------
-        # Encode all categorical
-        # -------------------------
+        # Encode
         df, encoders = self.preprocess(df, fit=True)
 
-        # -------------------------
-        # SAFETY CHECK: ensure required features exist
-        # -------------------------
-        missing = [c for c in SAFE_FEATURES_FOR_APR if c not in df.columns]
-        if len(missing) > 0:
-            raise ValueError(f"Missing safe features: {missing}")
+        # safety check
+        missing = [c for c in FEATURES if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing features: {missing}")
 
-        # =========================
-        # SPLIT SYNTHETIC DATA
-        # =========================
+        # split
         train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
         # =========================
-        # MODEL 1: APR_MDC (NO ICD FEATURES)
+        # MODEL 1: APR_MDC
         # =========================
-        print("\n🚀 Training APR_MDC model (leakage-safe)")
+        print("\n🚀 Training APR_MDC model")
 
-        X_train = train_df[SAFE_FEATURES_FOR_APR]
+        X_train = train_df[FEATURES]
         y_train = train_df[target_mdc]
 
-        X_test = test_df[SAFE_FEATURES_FOR_APR]
+        X_test = test_df[FEATURES]
         y_test = test_df[target_mdc]
 
         mdc_model = self.get_model(len(np.unique(y_train)))
         mdc_model.fit(X_train, y_train)
 
-        y_pred = mdc_model.predict(X_test)
+        print("\n📊 APR_MDC Evaluation")
+        print(classification_report(y_test, mdc_model.predict(X_test)))
 
-        print("\n📊 APR_MDC Evaluation (synthetic)")
-        print(classification_report(y_test, y_pred))
-
-        # =========================
-        # ADD APR PREDICTION FOR ICD MODEL
-        # =========================
-        df["APR_MDC_PRED"] = mdc_model.predict(df[SAFE_FEATURES_FOR_APR])
+        # add prediction for ICD stage
+        df["APR_MDC_PRED"] = mdc_model.predict(df[FEATURES])
 
         # =========================
-        # MODEL 2: ICD (USES APR ONLY, NOT RAW ICD FEATURES)
+        # MODEL 2: ICD
         # =========================
         print("\n🚀 Training ICD model")
 
-        icd_features = SAFE_FEATURES_FOR_APR + ["APR_MDC_PRED"]
+        icd_features = FEATURES + ["APR_MDC_PRED"]
 
         X_train_icd = df.loc[train_df.index, icd_features]
         y_train_icd = train_df[target_icd]
@@ -155,27 +145,29 @@ class TwoModelTrainer:
         icd_model = self.get_model(len(np.unique(y_train_icd)))
         icd_model.fit(X_train_icd, y_train_icd)
 
-        y_pred_icd = icd_model.predict(X_test_icd)
-
-        print("\n📊 ICD Evaluation (synthetic)")
-        print(classification_report(y_test_icd, y_pred_icd))
+        print("\n📊 ICD Evaluation")
+        print(classification_report(y_test_icd, icd_model.predict(X_test_icd)))
 
         # =========================
-        # SAVE MODELS
+        # SAVE
         # =========================
         joblib.dump({
             "mdc_model": mdc_model,
             "icd_model": icd_model,
             "encoders": encoders,
-            "safe_features": SAFE_FEATURES_FOR_APR
+            "features": FEATURES
         }, self.model_path)
 
         print(f"\n✅ Saved pipeline → {self.model_path}")
 
 
 # =========================
-# RUN
+# MAIN ENTRY POINT
 # =========================
-if __name__ == "__main__":
+def main():
     trainer = TwoModelTrainer()
     trainer.train()
+
+
+if __name__ == "__main__":
+    main()
