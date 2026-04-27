@@ -143,19 +143,7 @@ class TwoModelTrainer:
         print("Accuracy:", accuracy_score(y_icd_real, y_icd_pred))
         print("F1:", f1_score(y_icd_real, y_icd_pred, average="weighted"))
 
-        # =========================
-        # OPTIONAL: pipeline realism test
-        # =========================
-        print("\n📊 Evaluating ICD using PREDICTED APR (pipeline test)")
-
-        X_real_icd_pred = X_real_mdc.copy()
-        X_real_icd_pred[target_mdc] = mdc_model.predict(X_real_mdc)
-
-        y_icd_pred_pipeline = icd_model.predict(X_real_icd_pred)
-
-        print(classification_report(y_icd_real, y_icd_pred_pipeline))
-        print("Accuracy:", accuracy_score(y_icd_real, y_icd_pred_pipeline))
-        print("F1:", f1_score(y_icd_real, y_icd_pred_pipeline, average="weighted"))
+       
 
         # =========================
         # Save
