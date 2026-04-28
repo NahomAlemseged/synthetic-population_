@@ -63,7 +63,7 @@ validate:
 # ==============================
 train:
   input: 
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
     - "synthetic-population_/model_icd/" 
@@ -73,7 +73,7 @@ train:
 # ==============================
 evaluate:
   input:
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
     - "synthetic-population_/model/model.pkl"  # Model from repo
