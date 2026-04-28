@@ -97,9 +97,14 @@ class ICDGenerator:
             "SEX_CODE",
             "PAT_AGE",
             "RACE",
-            "ETHNICITY"
+            "ETHNICITY",
+            "PAT_ZIP",
+            "PAT_COUNTY",
+            "PUBLIC_HEALTH_REGION",
+            "FIRST_PAYMENT_SRC",
+            "EMERGENCY_DEPT_FLAG"
         ]
-
+    
         df_merged = df_pop.merge(
             synthetic_pool,
             on=merge_cols,
