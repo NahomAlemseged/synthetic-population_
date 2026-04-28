@@ -110,6 +110,19 @@ class TwoModelTrainer:
         train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
 
         # =========================
+        # ICD COVERAGE CHECK (NEW)
+        # =========================
+        train_icd_set = set(train_df[target_icd])
+        test_icd_set = set(test_df[target_icd])
+
+        unseen_icd = test_icd_set - train_icd_set
+
+        print("\n🔍 ICD Coverage Check")
+        print(f"Unique ICDs in TEST not in TRAIN: {len(unseen_icd)}")
+        print(f"Fraction of TEST ICDs unseen: {len(unseen_icd) / len(test_icd_set):.2%}")
+        print("Examples:", list(unseen_icd)[:20])
+
+        # =========================
         # MODEL 1: APR_MDC
         # =========================
         print("\n🚀 Training APR_MDC model")
