@@ -40,7 +40,7 @@ generate:
 generate_icd:
   input: 
     -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    -  "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv"
+    -  "/content/drive/MyDrive/data_THCIC/synthetic_population/synthetic_inpatient/synthetic_inpatient.csv"
     
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/"  # synthetic data on Drive
 
