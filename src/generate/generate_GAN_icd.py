@@ -26,9 +26,10 @@ OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd.csv"
 
 # 🔥 SETTINGS
-TRAIN_SAMPLE_SIZE = 100000   # for CTGAN training
+# TRAIN_SAMPLE_SIZE = 500000   # for CTGAN training
 POOL_MULTIPLIER = 3          # how large synthetic pool is
-
+df_train = pd.read_csv(train_path, dtype=str)
+df_pop = pd.read_csv(pop_path, dtype=str)
 
 # --------------------------
 # ICD Generator
@@ -48,7 +49,8 @@ class ICDGenerator:
         return df_train, df_pop
 
     def sample_training_data(self, df_train):
-        N = min(TRAIN_SAMPLE_SIZE, len(df_train))
+        # N = min(TRAIN_SAMPLE_SIZE, len(df_train))
+        N = len(df_pop)
         df_train_sampled = df_train.sample(n=N, random_state=42)
 
         print(f"⚡ Training on {N:,} sampled rows")
