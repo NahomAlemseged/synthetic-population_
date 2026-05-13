@@ -8,91 +8,217 @@ import mlflow.sklearn
 import torch
 
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import classification_report, accuracy_score, f1_score
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    classification_report,
+    accuracy_score,
+    f1_score
+)
 
 # GPU / CPU detection
 GPU_AVAILABLE = torch.cuda.is_available()
 device = "GPU" if GPU_AVAILABLE else "CPU"
 print(f"⚡ Using device: {device}")
 
-# ML models
+# ML model
 from xgboost import XGBClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
 
-# Load config
+
+# =========================================================
+# LOAD CONFIG
+# =========================================================
+
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
-with open(CONFIG_PATH) as file:
+
+with open(CONFIG_PATH, "r") as file:
     params = yaml.safe_load(file)
 
-class TrainSynth:
-    def __init__(self):
-        self.input_path_train = params['evaluate']['input'][0] if isinstance(params['train']['input'], list) else params['train']['input'][0]
-        self.input_path_test = params['evaluate']['input'][1] if isinstance(params['train']['input'], list) else params['train']['input'][1]
-        self.input_path_synth = params['generate_icd']['input'] if isinstance(params['train']['input'], list) else params['generate_icd']['input']
-        
-      
-        self.output_path = Path(params['train']['output'][0] if isinstance(params['train']['output'], list) else params['train']['output'])
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        self.model_file = self.output_path / "model.pkl"
 
-  
-    def split_encode(df, target_col):
-      X = df.drop(column = target_col)
-      y = df[target_col]
-      categorical_cols = X.select_dtypes(include='object').columns
+# =========================================================
+# TRAIN CLASS
+# =========================================================
+
+class TrainSynth:
+
+    def __init__(self):
+
+        # INPUT PATHS
+        self.input_path_train = (
+            params["evaluate"]["input"][2]
+            if isinstance(params["evaluate"]["input"], list)
+            else params["evaluate"]["input"]
+        )
+
+        self.input_path_test = (
+            params["evaluate"]["input"][1]
+            if isinstance(params["evaluate"]["input"], list)
+            else params["evaluate"]["input"]
+        )
+
+        self.input_path_synth = params["generate_icd"]["input"][1]
+
+        # OUTPUT PATH
+        self.output_path = Path(
+            params["train"]["output"][0]
+            if isinstance(params["train"]["output"], list)
+            else params["train"]["output"]
+        )
+
+        # self.output_path.mkdir(parents=True, exist_ok=True)
+
+        # self.model_file = self.output_path / "model.pkl"
+
+        # TARGET COLUMN
+        self.target_col = 'APR_MDC'
+
+    # =====================================================
+    # ENCODE FUNCTION
+    # =====================================================
+
+    def split_encode(self, df, target_col):
+
+        df = df.copy()
+
+        # Split X and y
+        X = df.drop(columns=[target_col])
+        y = df[target_col]
+
+        # Encode categorical columns
+        categorical_cols = X.select_dtypes(include=["object"]).columns
+
         encoders = {}
+
         for col in categorical_cols:
             le = LabelEncoder()
             X[col] = le.fit_transform(X[col].astype(str))
             encoders[col] = le
-        return X,y
-      
+
+        return X, y, encoders
+
+    # =====================================================
+    # TRAIN MODEL
+    # =====================================================
+
     def train_model(self):
-        # Load dataset
+
+        # -----------------------------
+        # LOAD DATASETS
+        # -----------------------------
+
         df_train = pd.read_csv(self.input_path_train, low_memory=False)
-        print(f">>> Loaded {len(df_train)} rows of train dataset")
+        print(f">>> Loaded TRAIN dataset: {len(df_train)} rows")
 
         df_test = pd.read_csv(self.input_path_test, low_memory=False)
-        print(f">>> Loaded {len(df_test)} rows of test dataset")
+        print(f">>> Loaded TEST dataset: {len(df_test)} rows")
 
         df_synth = pd.read_csv(self.input_path_synth, low_memory=False)
-        print(f">>> Loaded {len(df_synth)} rows of synthetic dataset")
+        print(f">>> Loaded SYNTH dataset: {len(df_synth)} rows")
 
 
-        X_train, y_train = split_encode(df_train)
-        X_test, y_test = split_encode(df_test)
+        df_train = df_train.sample(frac=0.5, random_state=42)
+        print(f">>> Sampled TRAIN dataset: {len(df_train)} rows")
 
+        df_test = df_test.sample(frac=0.5, random_state=42)
+        print(f">>> Sampled TEST dataset: {len(df_test)} rows")
 
-       # TRAIN-TEST ON REAL DATASET
-       model = xgb.XGBClassifier(
-          objective='binary:logistic',
-          n_estimators=100,
-          learning_rate=0.1,
-          max_depth=5,
-          random_state=42
-      )
+        df_synth = df_synth.sample(frac=0.5, random_state=42)
+        print(f">>> Sampled SYNTH dataset: {len(df_synth)} rows")
 
-      xgb_real = model.fit(X_train, y_train)
-      printf("Accuracy on Real Dataset : {accuracy_score(xgb_real.predict(X_test), y_test)}")
-      printf("F1 score on Real Dataset : {f1_score(xgb_real.predict(X_test), y_test)}")
-      
+        # -----------------------------
+        # ENCODE REAL DATA
+        # -----------------------------
 
-        # TRAIN TEST ON SYNHTETIC DATASET
-        # Split data
-        X_train_synth, X_test_synth, y_train_synth, y_test_synth = train_test_split(
-            X_synth, y_synth, test_size=0.2, stratify=y, random_state=42
+        X_train, y_train, _ = self.split_encode(
+            df_train,
+            self.target_col
         )
-      xgb_synth = model.fit(X_train, y_train)
-      
-      printf("Accuracy on Synthetic Dataset : {accuracy_score(xgb_synth.predict(X_test_synth), y_test_synth)}")
-      printf("F1 score on Synthetic Dataset : {f1_score(xgb_synth.predict(X_test_synth), y_test_synth)}")
 
+        X_test, y_test, _ = self.split_encode(
+            df_test,
+            self.target_col
+        )
+
+        # -----------------------------
+        # ENCODE SYNTHETIC DATA
+        # -----------------------------
+
+        X_synth, y_synth, _ = self.split_encode(
+            df_synth,
+            self.target_col
+        )
+
+        # -----------------------------
+        # XGBOOST MODEL
+        # -----------------------------
+
+        model = XGBClassifier(
+            objective="binary:logistic",
+            n_estimators=100,
+            learning_rate=0.1,
+            max_depth=5,
+            random_state=42,
+            tree_method="hist",
+            device="cuda" if GPU_AVAILABLE else "cpu"
+        )
+
+        # =================================================
+        # REAL → REAL
+        # =================================================
+
+        print("\n==============================")
+        print("REAL → REAL")
+        print("==============================")
+
+        xgb_real = model.fit(X_train, y_train)
+
+        y_pred_real = xgb_real.predict(X_test)
+
+        real_acc = accuracy_score(y_test, y_pred_real)
+        real_f1 = f1_score(y_test, y_pred_real, average="weighted")
+
+        print(f"Accuracy on Real Dataset : {real_acc:.4f}")
+        print(f"F1 Score on Real Dataset : {real_f1:.4f}")
+
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred_real))
+
+        # =================================================
+        # SYNTH → REAL
+        # =================================================
+
+        print("\n==============================")
+        print("SYNTH → REAL")
+        print("==============================")
+
+        xgb_synth = model.fit(X_synth, y_synth)
+
+        y_pred_synth = xgb_synth.predict(X_test)
+
+        synth_acc = accuracy_score(y_test, y_pred_synth)
+        synth_f1 = f1_score(y_test, y_pred_synth, average="weighted")
+
+        print(f"Accuracy on Synthetic Dataset : {synth_acc:.4f}")
+        print(f"F1 Score on Synthetic Dataset : {synth_f1:.4f}")
+
+        print("\nClassification Report:")
+        print(classification_report(y_test, y_pred_synth))
+
+        # =================================================
+        # SAVE MODEL
+        # =================================================
+
+        # joblib.dump(xgb_synth, self.model_file)
+
+        print(f"\n✅ Model saved to: {self.model_file}")
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
+
     trainer = TrainSynth()
     trainer.train_model()
 
