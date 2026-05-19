@@ -189,7 +189,7 @@ def main(args):
     # --------------------------
     # Save output
     # --------------------------
-    output_file = output_path / "synthetic_inpatient.csv"
+    output_file = output_path / "synthetic_inpatient_reverse.csv"
     synthetic_df.to_csv(output_file, index=False)
 
     print(f"✅ Saved to {output_file}")
@@ -205,7 +205,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--config",
         type=str,
-        default=r"C:\Users\nahomw\Desktop\from_mac\nahomworku\Desktop\uthealth\gra_project\synthetic-population\config\params.yaml"
+        default=r"/content/drive/MyDrive/config/params.yaml"
     )
 
     parser.add_argument("--n_samples", type=int, default=None)
