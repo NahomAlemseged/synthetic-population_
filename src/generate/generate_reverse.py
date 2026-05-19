@@ -11,6 +11,7 @@ from sklearn.preprocessing import LabelEncoder
 # =====================================================
 # Preprocessing
 # =====================================================
+
 def preprocess(df):
     df_ = df.copy()
 
@@ -36,6 +37,7 @@ def preprocess(df):
 # =====================================================
 # Autoregressive Generator
 # =====================================================
+
 class AutoRegressiveGenerator:
     def __init__(self, feature_order=None, alpha=1.0):
         self.feature_order = feature_order
@@ -85,8 +87,7 @@ class AutoRegressiveGenerator:
 
     def _smoothed_probs(self, series):
         counts = series.value_counts()
-        categories = counts.index.tolist()
-        K = len(categories)
+        K = len(counts)
         probs = (counts + self.alpha) / (counts.sum() + self.alpha * K)
         return probs.to_dict()
 
@@ -112,10 +113,7 @@ class AutoRegressiveGenerator:
                     probs = probs_dict.get("__base__", self.global_probs[feat])
                 else:
                     parent_vals = tuple(synthetic_row[p] for p in parents)
-                    probs = probs_dict.get(parent_vals, None)
-
-                    if probs is None:
-                        probs = self.global_probs[feat]
+                    probs = probs_dict.get(parent_vals, self.global_probs[feat])
 
                 synthetic_row[feat] = self._sample(probs)
 
@@ -130,18 +128,20 @@ class AutoRegressiveGenerator:
 # =====================================================
 # Main Pipeline
 # =====================================================
-def main(args):
+
+def main_gen(args):
     print("🚀 PIPELINE STARTED")
 
     # --------------------------
-    # Load config
+    # Load config (UNCHANGED PATHS)
     # --------------------------
     config_path = Path(args.config)
+
     with open(config_path, "r") as f:
         params_ = yaml.safe_load(f)
 
     train_csv_path = Path(params_['generate']['input'][0])
-    test_csv_path = Path(params_['generate']['input'][1])
+    test_csv_path = Path(params_['validate']['input'][1])
     output_path = Path(params_['generate']['output'][0])
 
     output_path.mkdir(parents=True, exist_ok=True)
@@ -155,8 +155,14 @@ def main(args):
     df_train = pd.read_csv(train_csv_path, low_memory=False)
     df_test = pd.read_csv(test_csv_path, low_memory=False)
 
-    if args.sample_rows:
-        df_train = df_train.sample(n=min(args.sample_rows, len(df_train)), random_state=42)
+    # --------------------------
+    # Safe sampling
+    # --------------------------
+    if args.sample_rows is not None:
+        df_train = df_train.sample(
+            n=min(args.sample_rows, len(df_train)),
+            random_state=42
+        )
 
     print("Train shape:", df_train.shape)
 
@@ -181,8 +187,11 @@ def main(args):
     # --------------------------
     apr_vals = df_new['APR_MDC']
 
-    if args.n_samples:
-        apr_vals = apr_vals.sample(n=min(args.n_samples, len(apr_vals)), replace=True)
+    if args.n_samples is not None:
+        apr_vals = apr_vals.sample(
+            n=min(args.n_samples, len(apr_vals)),
+            replace=True
+        )
 
     synthetic_df = generator.generate(apr_vals)
 
@@ -199,22 +208,22 @@ def main(args):
 # =====================================================
 # Entry Point
 # =====================================================
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def main():
+  if __name__ == "__main__":
+      parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=r"/content/drive/MyDrive/config/params.yaml"
-    )
+      parser.add_argument(
+          "--config",
+          type=str,
+          default=r"/content/drive/MyDrive/config/params.yaml"
+      )
 
-    parser.add_argument("--n_samples", type=int, default=None)
-    parser.add_argument("--sample_rows", type=int, default=None)
+      parser.add_argument("--n_samples", type=int, default=None)
+      parser.add_argument("--sample_rows", type=int, default=None)
 
-    # compatibility with your CLI
-    parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--num_processes", type=int, default=1)
+      parser.add_argument("--epochs", type=int, default=1)
+      parser.add_argument("--num_processes", type=int, default=1)
 
-    args = parser.parse_args()
+      args = parser.parse_args()
 
-    main(args)
+      return(main_gen(args))
