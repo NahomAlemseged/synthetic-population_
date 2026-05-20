@@ -82,7 +82,12 @@ class TrainSynth:
 
         # Split X and y
         X = df.drop(columns=[target_col])
+        if 'PRINC_DIAG_CODE' in X.columns:
+          X.drop(columns = 'PRINC_DIAG_CODE')
         y = df[target_col]
+
+        df.dropna(inplace = True)
+
 
         # Encode categorical columns
         categorical_cols = X.select_dtypes(include=["object"]).columns
@@ -108,13 +113,19 @@ class TrainSynth:
 
         df_train = pd.read_csv(self.input_path_train, low_memory=False)
         print(f">>> Loaded TRAIN dataset: {len(df_train)} rows")
+        if 'PRINC_DIAG_CODE' in df_train.columns:
+          df_train.drop(columns = 'PRINC_DIAG_CODE')
 
         df_test = pd.read_csv(self.input_path_test, low_memory=False)
         print(f">>> Loaded TEST dataset: {len(df_test)} rows")
+        if 'PRINC_DIAG_CODE' in df_test.columns:
+          df_test.drop(columns = 'PRINC_DIAG_CODE')
 
         df_synth = pd.read_csv(self.input_path_synth, low_memory=False)
         print(f">>> Loaded SYNTH dataset: {len(df_synth)} rows")
 
+        if 'PRINC_DIAG_CODE' in df_synth.columns:
+          df_synth.drop(columns = 'PRINC_DIAG_CODE')
 
         df_train = df_train.sample(frac=0.5, random_state=42)
         print(f">>> Sampled TRAIN dataset: {len(df_train)} rows")
@@ -153,12 +164,16 @@ class TrainSynth:
         # -----------------------------
 
         model = XGBClassifier(
-            objective="binary:logistic",
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=5,
+            objective="multi:softmax",
+            num_class=24,
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=8,
+            subsample=0.8,
+            colsample_bytree=0.8,
             random_state=42,
             tree_method="hist",
+            eval_metric="mlogloss",
             device="cuda" if GPU_AVAILABLE else "cpu"
         )
 
@@ -204,13 +219,75 @@ class TrainSynth:
         print("\nClassification Report:")
         print(classification_report(y_test, y_pred_synth))
 
+
+
+        # =================================================
+        # SYNTH → SYNTH
+        # =================================================
+# =================================================
+# SYNTH → SYNTH
+# =================================================
+
+        print("\n==============================")
+        print("SYNTH → SYNTH")
+        print("==============================")
+
+        (
+            X_train_synth,
+            X_test_synth,
+            y_train_synth,
+            y_test_synth
+        ) = train_test_split(
+            X_synth,
+            y_synth,
+            test_size=0.2,
+            random_state=42
+        )
+
+        print(f"X_train_synth shape: {X_train_synth.shape}")
+        print(f"X_test_synth shape: {X_test_synth.shape}")
+        print(f"y_train_synth shape: {y_train_synth.shape}")
+        print(f"y_test_synth shape: {y_test_synth.shape}")
+
+        xgb_synth_s = model.fit(
+            X_train_synth,
+            y_train_synth
+        )
+
+        y_pred_synth_s = xgb_synth_s.predict(
+            X_test_synth
+        )
+
+        synth_s_acc = accuracy_score(
+            y_test_synth,
+            y_pred_synth_s
+        )
+
+        synth_s_f1 = f1_score(
+            y_test_synth,
+            y_pred_synth_s,
+            average="weighted"
+        )
+
+        print(f"Accuracy on Synthetic Dataset : {synth_s_acc:.4f}")
+        print(f"F1 Score on Synthetic Dataset : {synth_s_f1:.4f}")
+
+        print("\nClassification Report:")
+
+        print(
+            classification_report(
+                y_test_synth,
+                y_pred_synth_s,
+                zero_division=0
+            )
+        )
         # =================================================
         # SAVE MODEL
         # =================================================
 
         # joblib.dump(xgb_synth, self.model_file)
 
-        print(f"\n✅ Model saved to: {self.model_file}")
+        # print(f"\n✅ Model saved to: {self.model_file}")
 
 
 # =========================================================
