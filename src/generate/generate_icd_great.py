@@ -35,7 +35,7 @@ def main():
     # Select features needed for ICD generation
     # Modify this list based on what features you want to condition the generation on
     features = ['RECORD_ID', 'PRINC_DIAG_CODE', 'APR_MDC', 'SEX_CODE', 'PAT_AGE', 'LENGTH_OF_STAY']
-    df_subset = df[features].dropna().astype(str).sample(n=10000, random_state=42) # Sample for training speed
+    df_subset = df[features].dropna().astype(str).sample(n=500000, random_state=42) # Sample for training speed
 
     print(f"Training GReaT model on {len(df_subset)} records...")
     # Initialize GReaT model
@@ -44,7 +44,7 @@ def main():
     # Train the model
     model.fit(df_subset)
 
-    n_samples = 10000
+    n_samples = 500000
     print(f"Generating {n_samples} synthetic records...")
     synthetic_data = model.sample(n_samples=n_samples, k=50)
 
