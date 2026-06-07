@@ -58,6 +58,6 @@ def main():
 
     synthetic_data.to_csv(out_path, index=False)
     print(f"Successfully saved generated data to {out_path}")
-    print(f"time elapesed for generating {n_samples} smles: {end_time - start_time}")
+    print(f"time elapesed for generating {n_samples} samles: {end_time - start_time}")
 if __name__ == '__main__':
     main()
