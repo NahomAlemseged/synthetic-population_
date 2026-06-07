@@ -13,6 +13,6 @@ pyarrow
 torch
 ctgan
 mlflow
-
+be-great
 
 # -e .
