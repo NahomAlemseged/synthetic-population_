@@ -4,12 +4,14 @@ import numpy as np
 from be_great import GReaT
 from pathlib import Path
 import yaml
+from time import time
 
 def load_config(config_path):
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
 
 def main():
+
     config_path = "config/params.yaml"
     if not os.path.exists(config_path):
         print(f"Config file not found: {config_path}")
@@ -39,6 +41,7 @@ def main():
 
     print(f"Training GReaT model on {len(df_subset)} records...")
     # Initialize GReaT model
+    start_time = time.time()
     model = GReaT(llm='distilgpt2', batch_size=32, epochs=5, save_steps=400000)
 
     # Train the model
@@ -47,6 +50,7 @@ def main():
     n_samples = 500000
     print(f"Generating {n_samples} synthetic records...")
     synthetic_data = model.sample(n_samples=n_samples, k=50)
+    end_time = time.time()
 
     out_dir = Path(data_dir) / 'generated'
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -54,6 +58,6 @@ def main():
 
     synthetic_data.to_csv(out_path, index=False)
     print(f"Successfully saved generated data to {out_path}")
-
+    print(f"time elapesed for generating {n_samples} smles: {end_time - start_time}")
 if __name__ == '__main__':
     main()
