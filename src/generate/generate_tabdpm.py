@@ -13,11 +13,17 @@ def main():
     train_path = '/content/drive/MyDrive/data_THCIC/gold/train.csv'
     synth_path = '/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv'
     out_dir = '/content/drive/MyDrive/data_THCIC/gold/generated'
-    out_path = Path(out_dir) / 'synthetic_inpatient_with_apr_mdc.csv'
+    out_path = Path(out_dir) / 'synthetic_inpatient_with_tabddpm.csv'
 
     print("Loading datasets...")
     train_df = pd.read_csv(train_path, low_memory=False)
     synth_df = pd.read_csv(synth_path, low_memory=False)
+
+    if "PRINC_DIAG_CODE" in train_df.columns:
+      train_df = train_df.drop(columns=["PRINC_DIAG_CODE"])
+
+    if "PRINC_DIAG_CODE" in synth_df.columns:
+      synth_df = synth_df.drop(columns=["PRINC_DIAG_CODE"])
 
     features = [
         'SEX_CODE', 'PAT_AGE', 'RACE', 'ETHNICITY', 'PAT_ZIP', 
@@ -50,7 +56,8 @@ def main():
         encoders[col] = le
 
     # Sample for DDPM training to prevent memory crashes
-    sample_size = min(50000, len(train_subset))
+    # sample_size = min(50000, len(train_subset))
+    sample_size = len(synth_df)
     train_sample = train_subset.sample(n=sample_size, random_state=42).copy()
 
     print(f"Training TabDDPM model on {len(train_sample)} real records...")
