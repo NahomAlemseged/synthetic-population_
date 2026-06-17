@@ -11,9 +11,9 @@ warnings.filterwarnings('ignore')
 
 def main():
     train_path = '/content/drive/MyDrive/data_THCIC/gold/train.csv'
-    synth_path = '/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv'
+    synth_path = '/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient_with_tabddpm.csv'
     out_dir = '/content/drive/MyDrive/data_THCIC/gold/generated'
-    out_path = Path(out_dir) / 'synthetic_inpatient_with_tabddpm.csv'
+    out_path = Path(out_dir) / 'synthetic_inpatient_drg_with_tabddpm.csv'
 
     print("Loading datasets...")
     train_df = pd.read_csv(train_path, low_memory=False)
