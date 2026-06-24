@@ -1,225 +1,204 @@
-import argparse
 import pandas as pd
 import numpy as np
-import torch
 import yaml
 from pathlib import Path
-from joblib import parallel_backend
-import os
-
-# from ctgan import CTGAN   # 🔒 Uncomment if using CTGAN
-import time
-
 import mlflow
-import mlflow.sklearn
 
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import classification_report, accuracy_score, f1_score
-
-from xgboost import XGBClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+
 
 # --------------------------
-# Command line arguments
-# --------------------------
-parser = argparse.ArgumentParser(description="Synthetic population generation")
-parser.add_argument("--n_samples", type=int, required=True)
-parser.add_argument("--epochs", type=int, default=5)
-parser.add_argument("--num_processes", type=int, default=1)
-parser.add_argument("--sample_rows", type=int, default=None)
-args = parser.parse_args()
-
-n_samples = args.n_samples
-epochs = args.epochs
-num_processes = args.num_processes
-sample_rows = args.sample_rows
-
-# --------------------------
-# Load YAML config
+# CONFIG
 # --------------------------
 CONFIG_PATH = Path("config/params.yaml")
 
 with open(CONFIG_PATH, "r") as f:
     params_ = yaml.safe_load(f)
 
-# Pick train and test CSV separately
-TRAIN_CSV = Path(params_["generate"]["input"][0])
-TEST_CSV = Path(params_["generate"]["input"][1])
+TRAIN_PATH = Path(params_["evaluate"]["input"][1])   # evaluate[1]
+TEST_PATH  = Path(params_["evaluate"]["input"][2])   # evaluate[2]
+SYNTH_PATH = Path(params_["generate_icd"]["input"][1])
 
 OUTPUT_PATH = Path(params_["generate"]["output"])
-OUTPUT_CSV = OUTPUT_PATH / "synthetic_inpatient_ml_drg.csv"
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
-torch.set_num_threads(num_processes)
+OUTPUT_CSV = OUTPUT_PATH / "synthetic_with_apr_drg_ml.csv"
+AUDIT_CSV = OUTPUT_PATH / "apr_drg_removed_audit.csv"
+
+SAMPLE_SIZE = 50000
+
 
 # --------------------------
-# Synthetic Generator (IPF)
-# --------------------------
-class SyntheticGenerator:
-    def __init__(self, input_csv):
-        self.input_csv = input_csv
-
-    def generate_ipf(self, df, features, target_marginals, tol=1e-5, max_iter=100):
-        df = df.copy()
-        df["weight"] = 1.0
-
-        for iteration in range(max_iter):
-            old_weights = df["weight"].copy()
-
-            for feat in features:
-                current = df.groupby(feat)["weight"].sum()
-                desired = pd.Series(target_marginals[feat])
-                ratios = desired / current
-                df["weight"] *= df[feat].map(ratios)
-
-            if np.allclose(df["weight"], old_weights, atol=tol):
-                print(f"✅ IPF converged at iteration {iteration}")
-                break
-
-        synthetic = df.sample(
-            n=min(n_samples, len(df)),
-            weights="weight",
-            replace=True,
-            random_state=42
-        ).drop(columns=["weight"])
-
-        if "APR_DRG" in synthetic.columns:
-            synthetic = synthetic.drop(columns=["APR_DRG"])
-
-        return synthetic
-
-# --------------------------
-# ML Generator (ACTIVE)
+# PIPELINE
 # --------------------------
 class GenerateML:
-    def __init__(self, train_path, test_path):
-        self.train_path = Path(train_path)
-        self.test_path = Path(test_path)
 
-    def train_and_generate(self, synthetic_demographics, target_col="APR_DRG"):
-        # Load data
-        df_train = pd.read_csv(self.train_path)
-        df_test = pd.read_csv(self.test_path)
+    def __init__(self, train_path, test_path, synth_path):
+        self.train_path = train_path
+        self.test_path = test_path
+        self.synth_path = synth_path
 
-        X_train = df_train.drop(columns=[target_col])
-        y_train = df_train[target_col]
+    def _load(self, path):
+        df = pd.read_csv(path, low_memory=False)
+        return df.drop(columns=["PRINC_DIAG_CODE"], errors="ignore")
 
-        X_test = df_test.drop(columns=[target_col])
-        y_test = df_test[target_col]
-
-        # Encode features
-        categorical_cols = X_train.select_dtypes(include="object").columns
+    # --------------------------
+    # FAST VECTOR ENCODING
+    # --------------------------
+    def _encode(self, X_train, X_test, X_syn):
         encoders = {}
+        cat_cols = X_train.select_dtypes(include="object").columns
 
-        for col in categorical_cols:
-            le = LabelEncoder()
-            X_train[col] = le.fit_transform(X_train[col].astype(str))
-            X_test[col] = X_test[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
-            encoders[col] = le
+        for col in cat_cols:
 
-        # Encode target
+            all_vals = pd.concat(
+                [X_train[col], X_test[col], X_syn[col]],
+                axis=0
+            ).astype(str).unique()
+
+            mapping = {v: i for i, v in enumerate(all_vals)}
+            encoders[col] = mapping
+
+            X_train[col] = X_train[col].astype(str).map(mapping).fillna(-1).astype(np.int32)
+            X_test[col]  = X_test[col].astype(str).map(mapping).fillna(-1).astype(np.int32)
+            X_syn[col]   = X_syn[col].astype(str).map(mapping).fillna(-1).astype(np.int32)
+
+        return X_train, X_test, X_syn
+
+    # --------------------------
+    # MAIN
+    # --------------------------
+    def train_and_generate(self, target_col="APR_DRG"):
+
+        print("⚙️ Loading data...")
+
+        df_train = self._load(self.train_path)
+        df_test  = self._load(self.test_path)
+        df_syn   = self._load(self.synth_path)
+
+        df_syn = df_syn.drop(columns=[target_col], errors="ignore")
+
+        # --------------------------
+        # sampling (fast mode)
+        # --------------------------
+        df_train = df_train.sample(min(SAMPLE_SIZE, len(df_train)), random_state=42)
+        df_test  = df_test.sample(min(SAMPLE_SIZE, len(df_test)), random_state=42)
+        df_syn   = df_syn.sample(min(SAMPLE_SIZE, len(df_syn)), random_state=42)
+
+        # --------------------------
+        # feature alignment
+        # --------------------------
+        feature_cols = sorted(list(set(df_train.columns) & set(df_test.columns)))
+        feature_cols = [c for c in feature_cols if c != target_col]
+
+        X_train = df_train[feature_cols].copy()
+        y_train = df_train[target_col].astype(str)
+
+        X_test = df_test[feature_cols].copy()
+        y_test = df_test[target_col].astype(str)
+
+        X_syn = df_syn.reindex(columns=feature_cols).copy()
+
+        # --------------------------
+        # remove unseen labels (AUDIT)
+        # --------------------------
+        train_labels = set(y_train.unique())
+
+        mask = y_test.isin(train_labels)
+        removed = df_test.loc[~mask, [target_col]].copy()
+        removed["reason"] = "unseen_APR_DRG_in_train"
+
+        print(f"❌ Removed test rows: {len(removed):,}")
+
+        if len(removed) > 0:
+            print(removed[target_col].value_counts().head(15))
+
+        removed.to_csv(AUDIT_CSV, index=False)
+
+        X_test = X_test.loc[mask].reset_index(drop=True)
+        y_test = y_test.loc[mask].reset_index(drop=True)
+
+        # --------------------------
+        # encoding (FAST)
+        # --------------------------
+        X_train, X_test, X_syn = self._encode(X_train, X_test, X_syn)
+
+        # --------------------------
+        # encode target
+        # --------------------------
         target_encoder = LabelEncoder()
-        y_train = target_encoder.fit_transform(y_train.astype(str))
-        y_test = target_encoder.transform(y_test.astype(str))
+        y_train_enc = target_encoder.fit_transform(y_train)
+        y_test_enc = target_encoder.transform(y_test)
 
-        # =========================
-        # Models
-        # =========================
-        experiments = {
-            "xgboost": {
-                "model": XGBClassifier(
-                    objective="multi:softprob",
-                    eval_metric="mlogloss",
-                    tree_method="hist",
-                    random_state=42
-                ),
-                "params": {"n_estimators": [200, 400]}
-            },
-            "random_forest": {
-                "model": RandomForestClassifier(random_state=42),
-                "params": {"n_estimators": [200, 400]}
-            },
-            "logistic_regression": {
-                "model": LogisticRegression(max_iter=1000),
-                "params": {"C": [0.1, 1, 10]}
-            }
-        }
+        # --------------------------
+        # MODEL (FAST)
+        # --------------------------
+        print("🚀 Training model...")
 
-        best_model = None
-        best_score = 0
+        model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=20,
+            n_jobs=-1,
+            random_state=42
+        )
 
-        mlflow.set_experiment("APR_MDC_multiclass")
+        mlflow.set_experiment("APR_DRG_FAST")
 
-        for name, exp in experiments.items():
-            with mlflow.start_run(run_name=name):
-                print(f"\n🚀 Training {name}")
-                grid = GridSearchCV(exp["model"], exp["params"], scoring="accuracy", cv=3, n_jobs=-1)
-                grid.fit(X_train, y_train)
+        with mlflow.start_run(run_name="rf_fast"):
 
-                y_pred = grid.predict(X_test)
-                acc = accuracy_score(y_test, y_pred)
-                print(classification_report(y_test, y_pred))
-                mlflow.log_params(grid.best_params_)
-                mlflow.log_metric("accuracy", acc)
+            model.fit(X_train, y_train_enc)
 
-                if acc > best_score:
-                    best_score = acc
-                    best_model = grid.best_estimator_
+            preds = model.predict(X_test)
 
-        # =========================
-        # Generate synthetic target
-        # =========================
-        df_demo = synthetic_demographics.copy()
-        df_demo = df_demo[X_train.columns]
+            acc = accuracy_score(y_test_enc, preds)
 
-        for col, le in encoders.items():
-            df_demo[col] = df_demo[col].map(lambda x: le.transform([x])[0] if x in le.classes_ else -1)
+            print("\n📊 Classification Report:\n")
+            print(classification_report(y_test_enc, preds))
 
-        probs = best_model.predict_proba(df_demo)
+            print(f"\n✅ Accuracy: {acc:.4f}")
 
-        preds = [np.random.choice(target_encoder.classes_, p=p) for p in probs]
-        df_demo[target_col] = target_encoder.inverse_transform(preds)
+            mlflow.log_metric("test_accuracy", acc)
 
-        return df_demo
+        # --------------------------
+        # SYNTHETIC GENERATION
+        # --------------------------
+        print("🧠 Generating APR_DRG for synthetic data...")
+
+        probs = model.predict_proba(X_syn)
+
+        df_syn = df_syn.reindex(columns=feature_cols)
+
+        df_syn[target_col] = [
+            np.random.choice(target_encoder.classes_, p=p)
+            for p in probs
+        ]
+
+        # --------------------------
+        # SAVE OUTPUT
+        # --------------------------
+        df_syn.to_csv(OUTPUT_CSV, index=False)
+
+        print(f"✅ Saved synthetic dataset: {OUTPUT_CSV}")
+        print(f"📁 Audit log: {AUDIT_CSV}")
+
+        return df_syn
+
 
 # --------------------------
-# Main Execution
+# MAIN
 # --------------------------
 def main():
-    print("⚙️ Starting pipeline...")
 
-    df_real = pd.read_csv(TRAIN_CSV, dtype=str)
+    print("⚙️ Pipeline started")
 
-    if sample_rows:
-        df_real = df_real.sample(sample_rows, random_state=42)
+    ml_gen = GenerateML(TRAIN_PATH, TEST_PATH, SYNTH_PATH)
 
-    features = [
-        "SEX_CODE", "PAT_AGE", "RACE", "ETHNICITY",
-        "PAT_ZIP", "PAT_COUNTY", "PUBLIC_HEALTH_REGION","APR_MDC"
-    ]
+    ml_gen.train_and_generate()
 
-    target_col = "APR_DRG"
+    print("🎉 Done")
 
-    target_marginals = {col: df_real[col].value_counts().to_dict() for col in features}
-
-    synth = SyntheticGenerator(TRAIN_CSV)
-
-    print("🔹 Step 1: IPF")
-    synthetic_demographics = synth.generate_ipf(df_real, features, target_marginals)
-
-    print("🔹 Step 2: ML Generation")
-    ml_gen = GenerateML(TRAIN_CSV, TEST_CSV)
-
-    synthetic_dataset = ml_gen.train_and_generate(synthetic_demographics, target_col)
-
-    print("🔹 Saving...")
-    synthetic_dataset.to_csv(OUTPUT_CSV, index=False)
-
-    print(f"✅ Done. Saved to {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     main()
-    
