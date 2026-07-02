@@ -4,7 +4,7 @@ import os
 
 from src.etl.etl import main as etl_main
 from src.ingestion.ingest import main as ingest_main
-from src.generate.generate import main as generate_main
+from src.generate.generate_mdc import main as generate_main
 from src.generate.generate_GAN_icd import main as generate_icd_main
 
 from src.validate.train import main as train_main
@@ -52,7 +52,6 @@ def main():
 
     # 4️⃣ Generate (GPU)
     run_stage(generate_icd_main, "GENERATE ICD")
-    generate_icd_main
 
     # 5️⃣ Train (GPU)
     run_stage(train_main, "TRAIN")
