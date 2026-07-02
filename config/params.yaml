@@ -35,12 +35,19 @@ ingestion:
 # ==============================
 generate:
   input: "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-  output: "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/"  # synthetic data on Drive
+  output: "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/"  # synthetic data on Drive
+
+generate_drg:
+  input: 
+    -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_inpatient.csv"
+    
+  output: "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/"  # synthetic data on Drive
 
 generate_icd:
   input: 
     -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    -  "/content/drive/MyDrive/data_THCIC/synthetic_population/synthetic_inpatient/synthetic_inpatient.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population/synthetic_inpatient_with_drg.csv"
     
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/"  # synthetic data on Drive
 
@@ -63,6 +70,8 @@ validate:
 # ==============================
 train:
   input: 
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_drg.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
@@ -76,8 +85,7 @@ evaluate:
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    - "synthetic-population_/model/model.pkl"  # Model from repo
-    - "synthetic-population_/model/model_icd.pkl"  # Model from repo
+    - "synthetic-population_/model/"  # Model from repo
 
   output:
     - "synthetic-population_/assets/"          # Evaluation outputs stay in repo
