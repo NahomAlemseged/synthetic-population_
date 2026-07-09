@@ -34,7 +34,10 @@ ingestion:
 # Data Generation
 # ==============================
 generate:
-  input: "/content/drive/MyDrive/data_THCIC/gold/train.csv"
+  input: 
+    - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
+
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/"  # synthetic data on Drive
 
 generate_drg:
