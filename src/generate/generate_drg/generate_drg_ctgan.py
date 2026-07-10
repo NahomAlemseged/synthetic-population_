@@ -24,7 +24,7 @@ OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_with_apr_drg_gan.csv"
 
-SAMPLE_SIZE = 50000
+SAMPLE_SIZE = 100000
 
 
 # --------------------------
@@ -64,6 +64,55 @@ class ICDGenerator:
     # --------------------------
     # PREPARE DATA
     # --------------------------
+    import pandas as pd
+
+    def keep_common_classes(df, target_col, threshold=0.7):
+        """
+        Keep rows belonging to the most common classes until the cumulative
+        normalized frequency reaches the specified threshold.
+    
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input dataframe.
+        target : str
+            Target column name.
+        threshold : float
+            Cumulative proportion to retain (between 0 and 1).
+    
+        Returns
+        -------
+        filtered_df : pd.DataFrame
+            DataFrame containing only the retained classes.
+        summary : pd.DataFrame
+            Summary table of class frequencies.
+        kept_classes : list
+            Classes that were retained.
+        """
+    
+        if not (0 < threshold <= 1):
+            raise ValueError("threshold must be between 0 and 1.")
+    
+        # Frequency table
+        summary = (
+            df[target_col]
+            .value_counts(normalize=True)
+            .sort_values(ascending=False)
+            .rename("proportion")
+            .reset_index()
+        )
+        summary.columns = [target, "proportion"]
+    
+        summary["cumulative"] = summary["proportion"].cumsum()
+    
+        # Keep classes until cumulative >= threshold
+        cutoff = summary["cumulative"].ge(threshold).idxmax()
+        kept_classes = summary.loc[:cutoff, target].tolist()
+    
+        filtered_df = df[df[target].isin(kept_classes)].copy()
+    
+        return filtered_df, summary, kept_classes
+        
     def prepare(self, df, features, target_col):
         cols = features + [target_col]
 
@@ -151,6 +200,7 @@ def main():
     gen = ICDGenerator(TRAIN_PATH, TEST_PATH, SYNTH_PATH)
 
     df_train, df_test, df_syn = gen.load_data()
+    df_train = keep_common_classes(df, target_col, threshold=0.7)
 
     # --------------------------
     # SAMPLE TRAINING DATA
@@ -160,6 +210,22 @@ def main():
     # --------------------------
     # PREPARE DATA
     # --------------------------
+
+    df_train, df_test, df_syn = gen.load_data()
+
+    df_train, class_summary, kept_classes = gen.keep_common_classes(
+        df_train,
+        target_col,
+        threshold=0.70
+        )
+
+    df_train = gen.sample(df_train, SAMPLE_SIZE)
+    
+    df_train_ctgan = gen.prepare(
+        df_train,
+        features,
+        target_col
+    )
     df_train_ctgan = gen.prepare(df_train, features, target_col)
 
     # CTGAN treats everything as categorical
@@ -171,7 +237,7 @@ def main():
     ctgan = gen.train_ctgan(
         df_train_ctgan,
         discrete_cols,
-        epochs=10
+        epochs=5
     )
 
     # --------------------------
