@@ -5,186 +5,581 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from pathlib import Path
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, classification_report
 from scipy.spatial.distance import jensenshannon
 
 
 # ======================================================
 # CONFIG
 # ======================================================
-CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
+
+CONFIG_PATH = Path(
+    "/content/synthetic-population_/config/params.yaml"
+)
+
 
 with open(CONFIG_PATH) as file:
     params_ = yaml.safe_load(file)
 
 
+
 # ======================================================
 # EVALUATION CLASS
 # ======================================================
+
 class Evaluate:
+
     def __init__(self):
 
         self.output_path = Path(
-            params_["evaluate_icd"]["output"][0]
-            if isinstance(params_["evaluate_icd"]["output"], list)
-            else params_["evaluate_icd"]["output"]
+            params_["evaluate"]["output"][0]
         )
 
-        self.reports_path = self.output_path / "reports"
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        self.reports_path.mkdir(parents=True, exist_ok=True)
 
-        self.input_files = params_["evaluate"]["input"]
-
-        # -----------------------------
-        # LOAD DATA (STRICT CLEANING)
-        # -----------------------------
-        self.df_train = pd.read_csv(self.input_files[2], low_memory=False)
-        self.df_test = pd.read_csv(self.input_files[1], low_memory=False)
-        self.df_train2 = pd.read_csv(self.input_files[0], low_memory=False)
-
-        # ❌ HARD DROP: remove PRINC_DIAG_CODE everywhere
-        for df in [self.df_train, self.df_test, self.df_train2]:
-            if "PRINC_DIAG_CODE" in df.columns:
-                df.drop(columns=["PRINC_DIAG_CODE"], inplace=True)
-
-        # Evaluation dataset
-        self.df_eval = pd.concat(
-            [self.df_train2, self.df_test],
-            ignore_index=True
+        self.reports_path = (
+            self.output_path / "reports"
         )
 
-        # Load model
-        bundle = joblib.load(self.input_files[3])
-        self.model = bundle["model"]
-        self.features = bundle["features"]
-        self.encoders = bundle.get("encoders", {})
+
+        self.reports_path.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+
+        self.input_files = (
+            params_["evaluate"]["input"]
+        )
+
+
+        # -----------------------------
+        # LOAD DATA
+        # -----------------------------
+
+        # synthetic dataset
+        self.df_synthetic = pd.read_csv(
+            self.input_files[0],
+            low_memory=False
+        )
+
+
+        # real test dataset
+        self.df_test = pd.read_csv(
+            self.input_files[1],
+            low_memory=False
+        )
+
+
+        # real train dataset (for distribution)
+        self.df_train = pd.read_csv(
+            self.input_files[2],
+            low_memory=False
+        )
+
+
+        for df in [
+            self.df_synthetic,
+            self.df_test,
+            self.df_train
+        ]:
+
+            df.drop(
+                columns=[
+                    "PRINC_DIAG_CODE"
+                ],
+                errors="ignore",
+                inplace=True
+            )
+
+
+        # -----------------------------
+        # FEATURES
+        # -----------------------------
+
+        self.features = [
+
+            "SEX_CODE",
+            "PAT_AGE",
+            "RACE",
+            "ETHNICITY",
+            "PAT_ZIP",
+            "PAT_COUNTY",
+            "PUBLIC_HEALTH_REGION",
+            "APR_MDC"
+
+        ]
+
+
+        self.target = "APR_DRG"
+
+
+
+        # -----------------------------
+        # LOAD MODEL
+        # -----------------------------
+
+        obj = joblib.load(
+            self.input_files[3]
+        )
+
+
+        # bundle model
+
+        if isinstance(obj, dict):
+
+            print(
+                "Loading model bundle"
+            )
+
+            self.model = obj["model"]
+
+            self.features = obj.get(
+                "features",
+                self.features
+            )
+
+
+            self.encoder = (
+                obj.get(
+                    "encoder",
+                    None
+                )
+            )
+
+
+        # standalone model
+
+        else:
+
+            print(
+                "Loading standalone XGBClassifier"
+            )
+
+            self.model = obj
+
+            self.encoder = None
+
+
 
     # ==================================================
     # PREPROCESS
     # ==================================================
+
     def preprocess(self, df):
 
-        df_ = df.copy()
+        df = df.copy()
 
-        # Apply saved encoders
-        for col, le in self.encoders.items():
-            if col in df_.columns:
-                df_[col] = pd.Categorical(df_[col], categories=le.classes_)
-                df_[col] = df_[col].cat.codes
 
-        # Convert remaining object columns
-        obj_cols = df_[self.features].select_dtypes(include="object").columns
-        for col in obj_cols:
-            df_[col] = df_[col].astype("category").cat.codes
+        # PAT AGE
 
-        X = df_[self.features]
+        if "PAT_AGE" in df.columns:
 
-        if X.select_dtypes(include="object").shape[1] > 0:
-            raise ValueError(
-                f"Unprocessed object columns: "
-                f"{X.select_dtypes(include='object').columns.tolist()}"
+            df["PAT_AGE"] = (
+                df["PAT_AGE"]
+                .astype(str)
+                .str.replace(
+                    r"\D",
+                    "",
+                    regex=True
+                )
             )
 
-        # ✅ ONLY TARGET LEFT
-        y = df_["APR_DRG"]
+
+            df["PAT_AGE"] = pd.to_numeric(
+                df["PAT_AGE"],
+                errors="coerce"
+            )
+
+
+
+        required = (
+            self.features
+            +
+            [self.target]
+        )
+
+
+        df = df.dropna(
+            subset=required
+        )
+
+
+
+        # categorical encoding
+
+        cat_cols = [
+
+            "SEX_CODE",
+            "RACE",
+            "ETHNICITY",
+            "PAT_ZIP",
+            "PAT_COUNTY",
+            "PUBLIC_HEALTH_REGION",
+            "APR_MDC"
+
+        ]
+
+
+        if self.encoder is not None:
+
+
+            df[cat_cols] = (
+                self.encoder.transform(
+                    df[cat_cols]
+                    .astype(str)
+                )
+            )
+
+
+        else:
+
+            for c in cat_cols:
+
+                if c in df.columns:
+
+                    df[c] = (
+                        df[c]
+                        .astype("category")
+                        .cat.codes
+                    )
+
+
+
+        X = df[self.features]
+
+        y = df[self.target].astype(int)
+
 
         return X, y
+
+
+
+    # ==================================================
+    # KEEP COMMON CLASSES
+    # ==================================================
+
+    def keep_common_classes(self):
+
+        common = (
+
+            set(
+                self.df_synthetic[self.target]
+            )
+
+            &
+
+            set(
+                self.df_test[self.target]
+            )
+
+        )
+
+
+        print(
+            f"Keeping {len(common)} APR_DRG classes"
+        )
+
+
+        self.df_synthetic = (
+            self.df_synthetic[
+                self.df_synthetic[self.target]
+                .isin(common)
+            ]
+        )
+
+
+        self.df_test = (
+            self.df_test[
+                self.df_test[self.target]
+                .isin(common)
+            ]
+        )
+
+
 
     # ==================================================
     # DISTRIBUTION MATCH
     # ==================================================
-    def dist_match(self, p, q, label_name):
 
-        output_file = self.reports_path / f"{label_name}_dist_match.png"
+    def dist_match(
+            self,
+            p,
+            q,
+            label_name
+    ):
 
-        idx = p.index.union(q.index)
-        p = p.reindex(idx, fill_value=0)
-        q = q.reindex(idx, fill_value=0)
 
-        js = jensenshannon(p.values, q.values)
-        similarity = (1 - js) * 100
+        output_file = (
+            self.reports_path
+            /
+            f"{label_name}_dist_match.png"
+        )
 
-        plt.figure(figsize=(8, 5))
-        plt.bar(idx.astype(str), p, alpha=0.6, label="Eval")
-        plt.bar(idx.astype(str), q, alpha=0.6, label="Train")
-        plt.xlabel(label_name)
-        plt.ylabel("Probability")
-        plt.title(f"{label_name} Distribution\nSimilarity = {similarity:.2f}%")
+
+        idx = (
+            p.index
+            .union(q.index)
+        )
+
+
+        p = p.reindex(
+            idx,
+            fill_value=0
+        )
+
+
+        q = q.reindex(
+            idx,
+            fill_value=0
+        )
+
+
+
+        js = jensenshannon(
+            p.values,
+            q.values
+        )
+
+
+        similarity = (
+            1-js
+        )*100
+
+
+
+        plt.figure(
+            figsize=(10,5)
+        )
+
+
+        plt.bar(
+            idx.astype(str),
+            p,
+            alpha=0.6,
+            label="Synthetic"
+        )
+
+
+        plt.bar(
+            idx.astype(str),
+            q,
+            alpha=0.6,
+            label="Real"
+        )
+
+
+        plt.title(
+            f"{label_name} Similarity={similarity:.2f}%"
+        )
+
+
+        plt.xlabel(
+            label_name
+        )
+
+
+        plt.ylabel(
+            "Probability"
+        )
+
+
         plt.legend()
+
+
         plt.tight_layout()
-        plt.savefig(output_file, dpi=300)
+
+
+        plt.savefig(
+            output_file,
+            dpi=300
+        )
+
+
         plt.close()
 
-        print(f"✅ Saved {label_name} distribution — Similarity: {similarity:.2f}%")
+
+
+        print(
+            f"{label_name}: {similarity:.2f}%"
+        )
+
+
         return similarity
 
-    # ==================================================
-    # DATA DISTRIBUTION
-    # ==================================================
-    def evaluate_data_distribution(self):
 
-        print("\n>>> Evaluating APR_DRG distribution (STRICT MODE)")
+
+    # ==================================================
+    # DISTRIBUTION EVALUATION
+    # ==================================================
+
+    def evaluate_distribution(self):
+
+        print(
+            "\n>>> Distribution similarity"
+        )
+
 
         results = {}
 
-        # ONLY APR_DRG (no PRINC_DIAG_CODE anywhere)
-        results["APR_DRG"] = self.dist_match(
-            self.df_eval["APR_DRG"].value_counts(normalize=True),
-            self.df_train["APR_DRG"].value_counts(normalize=True),
-            "APR_DRG"
-        )
 
-        results["SEX_CODE"] = self.dist_match(
-            self.df_eval["SEX_CODE"].value_counts(normalize=True),
-            self.df_train["SEX_CODE"].value_counts(normalize=True),
-            "SEX_CODE"
-        )
+        for col in [
 
-        results["RACE"] = self.dist_match(
-            self.df_eval["RACE"].value_counts(normalize=True),
-            self.df_train["RACE"].value_counts(normalize=True),
-            "RACE"
-        )
+            "APR_DRG",
+            "SEX_CODE",
+            "RACE",
+            "ETHNICITY",
+            "APR_MDC"
 
-        summary = pd.DataFrame({
+        ]:
+
+
+            if col in self.df_synthetic.columns:
+
+
+                results[col] = self.dist_match(
+
+                    self.df_synthetic[col]
+                    .value_counts(normalize=True),
+
+                    self.df_test[col]
+                    .value_counts(normalize=True),
+
+                    col
+                )
+
+
+
+        pd.DataFrame({
+
             "Feature": results.keys(),
-            "Jensen_Shannon": results.values()
-        })
 
-        summary_path = self.reports_path / "data_dist_match_summary.csv"
-        summary.to_csv(summary_path, index=False)
+            "Similarity": results.values()
 
-        print(f"\n✅ Saved summary → {summary_path}")
-        print(summary)
+        }).to_csv(
+
+            self.reports_path /
+            "distribution_similarity.csv",
+
+            index=False
+
+        )
+
+
 
     # ==================================================
-    # MODEL ACCURACY
+    # TSTR
     # ==================================================
-    def evaluate_accuracy(self):
 
-        print("\n>>> Evaluating model accuracy (APR_DRG ONLY)")
+    def evaluate_tstr(self):
 
-        X, y = self.preprocess(self.df_eval)
-        preds = self.model.predict(X)
 
-        acc = accuracy_score(y, preds)
+        print(
+            "\n=============================="
+        )
 
-        with open(self.reports_path / "accuracy.txt", "w") as f:
-            f.write(f"Accuracy: {acc:.4f}\n")
+        print(
+            "TSTR: SYNTHETIC TRAIN → REAL TEST"
+        )
 
-        print(f"✅ Model accuracy = {acc:.4f}")
+        print(
+            "=============================="
+        )
+
+
+
+        X_train, y_train = self.preprocess(
+            self.df_synthetic
+        )
+
+
+        X_test, y_test = self.preprocess(
+            self.df_test
+        )
+
+
+        print(
+            "Synthetic train:",
+            X_train.shape
+        )
+
+
+        print(
+            "Real test:",
+            X_test.shape
+        )
+
+
+        pred = self.model.predict(
+            X_test
+        )
+
+
+        acc = accuracy_score(
+            y_test,
+            pred
+        )
+
+
+        print(
+            f"TSTR Accuracy = {acc:.4f}"
+        )
+
+
+        print(
+            classification_report(
+                y_test,
+                pred,
+                zero_division=0
+            )
+        )
+
+
+        with open(
+            self.reports_path /
+            "tstr_accuracy.txt",
+            "w"
+        ) as f:
+
+            f.write(
+                f"TSTR Accuracy: {acc:.4f}\n\n"
+            )
+
+            f.write(
+                classification_report(
+                    y_test,
+                    pred,
+                    zero_division=0
+                )
+            )
+
+
         return acc
+
+
 
 
 # ======================================================
 # MAIN
 # ======================================================
+
 def main():
-    print("⚙️ Starting STRICT APR_DRG evaluation pipeline...")
+
+    print(
+        "🚀 Starting Evaluation"
+    )
+
+
     evaluator = Evaluate()
-    evaluator.evaluate_data_distribution()
-    evaluator.evaluate_accuracy()
+
+
+    evaluator.keep_common_classes()
+
+
+    evaluator.evaluate_distribution()
+
+
+    evaluator.evaluate_tstr()
+
 
 
 if __name__ == "__main__":
