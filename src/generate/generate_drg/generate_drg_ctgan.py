@@ -15,11 +15,11 @@ CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 with open(CONFIG_PATH, "r") as f:
     params = yaml.safe_load(f)
 
-TRAIN_PATH = Path(params["evaluate"]["input"][1])   # evaluate[1]
-TEST_PATH  = Path(params["evaluate"]["input"][2])   # evaluate[2]
-SYNTH_PATH = Path(params["generate_icd"]["input"][1])
+TRAIN_PATH = Path(params["generate_drg"]["input"][0])   # evaluate[1]
+TEST_PATH  = Path(params["generate_drg"]["input"][1])   # evaluate[2]
+SYNTH_PATH = Path(params["generate_drg"]["input"][2])
 
-OUTPUT_PATH = Path(params["generate"]["output"])
+OUTPUT_PATH = Path(params["generate_drg"]["output"])
 OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
 OUTPUT_CSV = OUTPUT_PATH / "synthetic_with_apr_drg_gan.csv"
@@ -64,35 +64,15 @@ class ICDGenerator:
     # --------------------------
     # PREPARE DATA
     # --------------------------
-    import pandas as pd
-
-    def keep_common_classes(df, target_col, threshold=0.7):
+    def keep_common_classes(self, df, target_col, threshold=0.7):
         """
         Keep rows belonging to the most common classes until the cumulative
         normalized frequency reaches the specified threshold.
-    
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Input dataframe.
-        target : str
-            Target column name.
-        threshold : float
-            Cumulative proportion to retain (between 0 and 1).
-    
-        Returns
-        -------
-        filtered_df : pd.DataFrame
-            DataFrame containing only the retained classes.
-        summary : pd.DataFrame
-            Summary table of class frequencies.
-        kept_classes : list
-            Classes that were retained.
         """
-    
+
         if not (0 < threshold <= 1):
             raise ValueError("threshold must be between 0 and 1.")
-    
+
         # Frequency table
         summary = (
             df[target_col]
@@ -101,16 +81,20 @@ class ICDGenerator:
             .rename("proportion")
             .reset_index()
         )
-        summary.columns = [target, "proportion"]
-    
+
+        summary.columns = [target_col, "proportion"]
         summary["cumulative"] = summary["proportion"].cumsum()
-    
-        # Keep classes until cumulative >= threshold
+
+        # First row where cumulative >= threshold
         cutoff = summary["cumulative"].ge(threshold).idxmax()
-        kept_classes = summary.loc[:cutoff, target].tolist()
-    
-        filtered_df = df[df[target].isin(kept_classes)].copy()
-    
+
+        kept_classes = summary.loc[:cutoff, target_col].tolist()
+
+        filtered_df = df[df[target_col].isin(kept_classes)].copy()
+
+        print(f"Keeping {len(kept_classes)} classes")
+        print(f"Rows kept: {len(filtered_df):,}/{len(df):,}")
+
         return filtered_df, summary, kept_classes
         
     def prepare(self, df, features, target_col):
@@ -200,18 +184,18 @@ def main():
     gen = ICDGenerator(TRAIN_PATH, TEST_PATH, SYNTH_PATH)
 
     df_train, df_test, df_syn = gen.load_data()
-    df_train = keep_common_classes(df, target_col, threshold=0.7)
+    # df_train = gen.keep_common_classes(df_train, target_col, threshold=0.7)
 
     # --------------------------
     # SAMPLE TRAINING DATA
     # --------------------------
-    df_train = gen.sample(df_train, SAMPLE_SIZE)
+    # df_train = gen.sample(df_train, SAMPLE_SIZE)
 
     # --------------------------
     # PREPARE DATA
     # --------------------------
 
-    df_train, df_test, df_syn = gen.load_data()
+    # df_train, df_test, df_syn = gen.load_data()
 
     df_train, class_summary, kept_classes = gen.keep_common_classes(
         df_train,
