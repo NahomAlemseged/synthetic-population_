@@ -1,22 +1,15 @@
 import yaml
 import numpy as np
 import pandas as pd
-import mlflow
 import torch
 
 from pathlib import Path
 
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    roc_auc_score
-)
-
+from sklearn.metrics import roc_auc_score
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import NearestNeighbors
-from xgboost import XGBClassifier
 
 
 # =====================================================
@@ -25,7 +18,7 @@ from xgboost import XGBClassifier
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-print(f"⚡ Using device: {DEVICE}")
+print(f"Using device: {DEVICE}")
 
 
 # =====================================================
@@ -41,10 +34,6 @@ with open(CONFIG_PATH) as f:
 
 
 
-# =====================================================
-# CLASS
-# =====================================================
-
 class PrivacyEval:
 
 
@@ -55,18 +44,15 @@ class PrivacyEval:
 
         self.synth_path = params["generate_drg"]["input"][3]
 
-
         self.target = "APR_DRG"
 
         self.sample_size = 100000
 
-        self.encoders = {}
 
 
-
-    # =================================================
-    # LOAD
-    # =================================================
+    # =====================================================
+    # LOAD DATA
+    # =====================================================
 
     def load_data(self):
 
@@ -96,110 +82,67 @@ class PrivacyEval:
                 )
 
 
-        print(
-            f"Train : {train.shape}"
-        )
-
-        print(
-            f"Test  : {test.shape}"
-        )
-
-        print(
-            f"Synth : {synth.shape}"
-        )
+        print("Train :",train.shape)
+        print("Test  :",test.shape)
+        print("Synth :",synth.shape)
 
 
         return train,test,synth
 
 
 
+    # =====================================================
+    # COMMON CLASSES
+    # =====================================================
 
-    # =================================================
-    # ALIGN DATASETS
-    # =================================================
-
-    def align_data(
-            self,
-            train,
-            test,
-            synth
+    def align_classes(
+        self,
+        train,
+        test,
+        synth
     ):
 
 
-        # common columns
-
-        common_cols = (
-
-            set(train.columns)
+        common = (
+            set(train[self.target])
             &
-            set(test.columns)
+            set(test[self.target])
             &
-            set(synth.columns)
-
+            set(synth[self.target])
         )
 
 
-        common_cols.add(self.target)
-
-
-        common_cols=list(common_cols)
-
-
-
-        train=train[common_cols].copy()
-
-        test=test[common_cols].copy()
-
-        synth=synth[common_cols].copy()
-
-
-
-        # keep common APR_DRG classes
-
-        c1=set(train[self.target].unique())
-
-        c2=set(test[self.target].unique())
-
-        c3=set(synth[self.target].unique())
-
-
-        common_y = c1 & c2 & c3
-
-
-
         print(
-            f"Keeping {len(common_y)} common APR_DRG classes"
+            f"Keeping {len(common)} common APR_DRG classes"
         )
 
 
         train=train[
-            train[self.target].isin(common_y)
+            train[self.target].isin(common)
         ]
 
         test=test[
-            test[self.target].isin(common_y)
+            test[self.target].isin(common)
         ]
 
         synth=synth[
-            synth[self.target].isin(common_y)
+            synth[self.target].isin(common)
         ]
-
 
 
         return train,test,synth
 
 
 
+    # =====================================================
+    # ENCODING
+    # =====================================================
 
-    # =================================================
-    # ENCODE
-    # =================================================
-
-    def encode_all(
-            self,
-            train,
-            test,
-            synth
+    def encode(
+        self,
+        train,
+        test,
+        synth
     ):
 
 
@@ -209,22 +152,18 @@ class PrivacyEval:
                 test,
                 synth
             ],
-            axis=0
+            ignore_index=True
         )
 
 
-        X_all=combined.drop(
+        y=combined[self.target]
+
+        X=combined.drop(
             columns=[self.target]
         )
 
 
-        y_all=combined[self.target]
-
-
-
-        # categorical encoding
-
-        for col in X_all.select_dtypes(
+        for col in X.select_dtypes(
             include="object"
         ).columns:
 
@@ -232,79 +171,87 @@ class PrivacyEval:
             le=LabelEncoder()
 
 
-            X_all[col]=le.fit_transform(
-                X_all[col].astype(str)
+            X[col]=le.fit_transform(
+                X[col].astype(str)
             )
 
 
-            self.encoders[col]=le
 
-
-
-
-        X_all=X_all.fillna(-1)
+        X=X.fillna(-1)
 
 
 
         n1=len(train)
-
         n2=len(test)
 
-        n3=len(synth)
 
 
-
-        X_train=X_all.iloc[:n1]
-
-        X_test=X_all.iloc[n1:n1+n2]
-
-        X_synth=X_all.iloc[n1+n2:]
+        X_train=X.iloc[:n1]
+        X_test=X.iloc[n1:n1+n2]
+        X_synth=X.iloc[n1+n2:]
 
 
-
-        y_train=y_all.iloc[:n1]
-
-        y_test=y_all.iloc[n1:n1+n2]
-
-        y_synth=y_all.iloc[n1+n2:]
-
+        y_train=y.iloc[:n1]
+        y_test=y.iloc[n1:n1+n2]
+        y_synth=y.iloc[n1+n2:]
 
 
         return (
             X_train,
-            y_train,
             X_test,
-            y_test,
             X_synth,
+            y_train,
+            y_test,
             y_synth
         )
 
 
 
-
-    # =================================================
+    # =====================================================
     # MIA
-    # =================================================
+    # =====================================================
 
     def mia(
-            self,
-            X_train,
-            X_test
+        self,
+        X_train,
+        X_test
     ):
+
+
+        # sample for speed
+
+        n=min(
+            self.sample_size,
+            len(X_train),
+            len(X_test)
+        )
+
+
+        X_in=X_train.sample(
+            n,
+            random_state=42
+        )
+
+
+        X_out=X_test.sample(
+            n,
+            random_state=42
+        )
+
 
 
         X=np.vstack(
             [
-                X_train,
-                X_test
+                X_in,
+                X_out
             ]
         )
 
 
         y=np.concatenate(
             [
-                np.ones(len(X_train)),
-                np.zeros(len(X_test))
+                np.ones(n),
+                np.zeros(n)
             ]
         )
 
@@ -318,41 +265,46 @@ class PrivacyEval:
 
 
 
-        clf=RandomForestClassifier(
-            n_estimators=100,
+        model=RandomForestClassifier(
+            n_estimators=50,
             n_jobs=-1,
             random_state=42
         )
 
 
-        clf.fit(
+        model.fit(
             X1,
             y1
         )
 
 
-        p=clf.predict_proba(
+        prob=model.predict_proba(
             X2
         )[:,1]
 
 
+        auc=roc_auc_score(
+            y2,
+            prob
+        )
+
+
         return {
-
-            "mia_auc":
-            roc_auc_score(y2,p)
-
+            "mia_auc":auc
         }
 
 
 
-    # =================================================
+
+    # =====================================================
     # NND
-    # =================================================
+    # =====================================================
 
     def nnd(
-            self,
-            X_train,
-            X_synth
+        self,
+        X_train,
+        X_synth,
+        X_test
     ):
 
 
@@ -369,6 +321,13 @@ class PrivacyEval:
         )
 
 
+        X_test=scaler.transform(
+            X_test
+        )
+
+
+
+        # real-real baseline
 
         nn=NearestNeighbors(
             n_neighbors=1,
@@ -379,98 +338,70 @@ class PrivacyEval:
         nn.fit(X_train)
 
 
-        d,_=nn.kneighbors(
-            X_synth
-        )
-
-
-        d=d.flatten()
-
-
-
-        return {
-
-            "mean_nnd":
-            float(d.mean()),
-
-
-            "median_nnd":
-            float(np.median(d)),
-
-
-            "leak_rate":
-            float(
-                np.mean(
-                    d <
-                    np.percentile(d,5)
-                )
-            )
-
-        }
-
-
-
-    # =================================================
-    # UTILITY
-    # =================================================
-
-    def utility(
-            self,
-            X_synth,
-            y_synth,
-            X_test,
-            y_test
-    ):
-
-
-        model=XGBClassifier(
-            objective="multi:softmax",
-            n_estimators=100,
-            eval_metric="mlogloss",
-            tree_method="hist",
-            device=DEVICE,
-            random_state=42
-        )
-
-
-        model.fit(
-            X_synth,
-            y_synth
-        )
-
-
-        pred=model.predict(
+        real_dist,_=nn.kneighbors(
             X_test
         )
 
 
+        synth_dist,_=nn.kneighbors(
+            X_synth
+        )
+
+
+        real_mean=np.mean(real_dist)
+
+        synth_mean=np.mean(synth_dist)
+
+
+
+        # privacy relative to real variation
+
+        P_nnd=(
+            synth_mean /
+            (
+                synth_mean+
+                real_mean
+            )
+        )
+
+
+        leak_rate=np.mean(
+            synth_dist <
+            np.percentile(
+                real_dist,
+                5
+            )
+        )
+
+
         return {
 
-            "synth_real_accuracy":
-            accuracy_score(
-                y_test,
-                pred
-            ),
+            "real_nnd":
+            real_mean,
 
 
-            "synth_real_f1":
-            f1_score(
-                y_test,
-                pred,
-                average="weighted"
-            )
+            "mean_nnd":
+            synth_mean,
 
+
+            "leak_rate":
+            leak_rate,
+
+
+            "P_nnd":
+            P_nnd
         }
 
 
 
-    # =================================================
-    # PRIVACY SCORE
-    # =================================================
 
-    def score(
-            self,
-            r
+    # =====================================================
+    # PRIVACY SCORE
+    # =====================================================
+
+    def privacy_score(
+        self,
+        result
     ):
 
 
@@ -479,50 +410,43 @@ class PrivacyEval:
             abs(
                 2*
                 (
-                    r["mia_auc"]-0.5
+                    result["mia_auc"]-0.5
                 )
             )
         )
 
 
-        P_nnd = (
-            r["mean_nnd"]
-            /
-            (
-                r["mean_nnd"]+1
-            )
-        )
-
-
         P_leak = (
-            1-r["leak_rate"]
+            1-result["leak_rate"]
         )
+
+
+        score=(
+            P_mia+
+            result["P_nnd"]+
+            P_leak
+        )/3
 
 
 
         return {
 
-            "P_mia":P_mia,
+            "P_mia":
+            P_mia,
 
-            "P_nnd":P_nnd,
-
-            "P_leak":P_leak,
-
+            "P_leak":
+            P_leak,
 
             "privacy_score":
-            (
-                .4*P_mia+
-                .3*P_nnd+
-                .3*P_leak
-            )
+            score
 
         }
 
 
 
-    # =================================================
+    # =====================================================
     # RUN
-    # =================================================
+    # =====================================================
 
     def run(self):
 
@@ -530,8 +454,7 @@ class PrivacyEval:
         train,test,synth=self.load_data()
 
 
-
-        train,test,synth=self.align_data(
+        train,test,synth=self.align_classes(
             train,
             test,
             synth
@@ -540,79 +463,64 @@ class PrivacyEval:
 
         (
             X_train,
-            y_train,
             X_test,
-            y_test,
             X_synth,
+            y_train,
+            y_test,
             y_synth
 
-        )=self.encode_all(
+        )=self.encode(
             train,
             test,
             synth
         )
 
 
-        print("\n🔐 MIA")
 
         result={}
 
+
+
+        print("\nRunning MIA")
+
         result.update(
             self.mia(
-                X_train.values,
-                X_test.values
+                X_train,
+                X_test
             )
         )
 
 
 
-        print("\n📏 NND")
+        print("\nRunning NND")
 
         result.update(
             self.nnd(
-                X_train.values,
-                X_synth.values
+                X_train,
+                X_synth,
+                X_test
             )
         )
 
 
 
-        # print("\n🧪 Utility")
-
-        # result.update(
-        #     self.utility(
-        #         X_synth,
-        #         y_synth,
-        #         X_test,
-        #         y_test
-        #     )
-        # )
-
-
-
         result.update(
-            self.score(result)
+            self.privacy_score(
+                result
+            )
         )
 
 
 
-        print(
-            "\n=========================="
-        )
-
-        print(
-            "PRIVACY REPORT"
-        )
-
-        print(
-            "=========================="
-        )
+        print("\n========================")
+        print("PRIVACY REPORT")
+        print("========================")
 
 
         for k,v in result.items():
 
             print(
-                f"{k:25}: {v:.4f}"
+                f"{k:20}: {v:.4f}"
             )
 
 
@@ -629,10 +537,6 @@ class PrivacyEval:
 
 
 
-
-# =====================================================
-# MAIN
-# =====================================================
 
 def main():
 
