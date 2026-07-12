@@ -43,7 +43,8 @@ generate:
 generate_drg:
   input: 
     -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_inpatient.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/test.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
     
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/"  # synthetic data on Drive
 
@@ -74,7 +75,7 @@ validate:
 train:
   input: 
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population.csv"
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_drg.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
@@ -85,10 +86,10 @@ train:
 # ==============================
 evaluate:
   input:
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    - "synthetic-population_/model/"  # Model from repo
+    - "/content/synthetic-population_/model/xgb_tstr_drg.pkl"  # Model from repo
 
   output:
     - "synthetic-population_/assets/"          # Evaluation outputs stay in repo
