@@ -1,0 +1,230 @@
+import os
+import yaml
+import argparse
+import joblib
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from sklearn.preprocessing import LabelEncoder
+
+
+# =====================================================
+# Preprocessing
+# =====================================================
+
+def preprocess(df):
+    df_ = df.copy()
+    if 'PRINC_DIAG_CODE' in df_.column:
+      df_.drop(column = 'PRINC_DIAG_CODE', inplace=True)
+    cat_cols = [
+        'DISCHARGE', 'TYPE_OF_ADMISSION', 'SOURCE_OF_ADMISSION',
+        'PUBLIC_HEALTH_REGION', 'PAT_STATUS', 'SEX_CODE',
+        'RACE', 'ETHNICITY', 'ADMIT_WEEKDAY', 'PAT_AGE','APR_MDC'
+    ]
+
+    for col in cat_cols:
+        df_[col] = df_[col].astype(str)
+        le = LabelEncoder()
+        df_[col] = le.fit_transform(df_[col])
+
+    num_cols = ['LENGTH_OF_STAY']
+
+    X = df_[cat_cols + num_cols]
+    y = df_['APR_DRG']
+
+    return X, y
+
+
+# =====================================================
+# Autoregressive Generator
+# =====================================================
+
+class AutoRegressiveGenerator:
+    def __init__(self, feature_order=None, alpha=1.0):
+        self.feature_order = feature_order
+        self.alpha = alpha
+        self.conditional_probs = None
+        self.global_probs = None
+        self.output_col = None
+
+    def fit(self, df, output_col='APR_DRG', feature_order=None):
+        self.output_col = output_col
+
+        if feature_order is None:
+            feature_order = [c for c in df.columns if c != output_col]
+
+        self.feature_order = feature_order
+        self.conditional_probs = {}
+
+        for apr_val, group in df.groupby(output_col):
+            self.conditional_probs[apr_val] = {}
+
+            for i, feat in enumerate(self.feature_order):
+                parents = self.feature_order[:i]
+
+                if len(parents) == 0:
+                    probs = self._smoothed_probs(group[feat])
+                    self.conditional_probs[apr_val][feat] = {"__base__": probs}
+                else:
+                    cond_dict = {}
+                    grouped = group.groupby(parents)[feat]
+
+                    for parent_vals, sub in grouped:
+                        key = parent_vals if isinstance(parent_vals, tuple) else (parent_vals,)
+                        probs = self._smoothed_probs(sub)
+                        cond_dict[key] = probs
+
+                    self.conditional_probs[apr_val][feat] = cond_dict
+
+        print("✅ Learned autoregressive conditional distributions")
+        return self
+
+    def fit_globals(self, df):
+        self.global_probs = {
+            feat: self._smoothed_probs(df[feat])
+            for feat in self.feature_order
+        }
+        return self
+
+    def _smoothed_probs(self, series):
+        counts = series.value_counts()
+        K = len(counts)
+        probs = (counts + self.alpha) / (counts.sum() + self.alpha * K)
+        return probs.to_dict()
+
+    def _sample(self, probs):
+        choices, p = zip(*probs.items())
+        return np.random.choice(choices, p=np.array(p) / np.sum(p))
+
+    def generate(self, df_output):
+        if isinstance(df_output, pd.Series):
+            df_output = pd.DataFrame({self.output_col: df_output})
+
+        synthetic_records = []
+
+        for _, row in df_output.iterrows():
+            apr_val = row[self.output_col]
+            synthetic_row = {self.output_col: apr_val}
+
+            for i, feat in enumerate(self.feature_order):
+                parents = self.feature_order[:i]
+                probs_dict = self.conditional_probs.get(apr_val, {}).get(feat, {})
+
+                if len(parents) == 0:
+                    probs = probs_dict.get("__base__", self.global_probs[feat])
+                else:
+                    parent_vals = tuple(synthetic_row[p] for p in parents)
+                    probs = probs_dict.get(parent_vals, self.global_probs[feat])
+
+                synthetic_row[feat] = self._sample(probs)
+
+            synthetic_records.append(synthetic_row)
+
+        synthetic_df = pd.DataFrame(synthetic_records)
+        print(f"✅ Generated {len(synthetic_df)} samples")
+
+        return synthetic_df
+
+
+# =====================================================
+# Main Pipeline
+# =====================================================
+
+def main_gen(args):
+    print("🚀 PIPELINE STARTED")
+
+    # --------------------------
+    # Load config (UNCHANGED PATHS)
+    # --------------------------
+    config_path = Path(args.config)
+
+    with open(config_path, "r") as f:
+        params_ = yaml.safe_load(f)
+
+    train_csv_path = Path(params_['generate']['input'][0])
+    test_csv_path = Path(params_['validate']['input'][1])
+    output_path = Path(params_['generate']['output'][0])
+
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    print("Train:", train_csv_path)
+    print("Test:", test_csv_path)
+
+    # --------------------------
+    # Load data
+    # --------------------------
+    df_train = pd.read_csv(train_csv_path, low_memory=False)
+    df_test = pd.read_csv(test_csv_path, low_memory=False)
+
+    # --------------------------
+    # Safe sampling
+    # --------------------------
+    if args.sample_rows is not None:
+        df_train = df_train.sample(
+            n=min(args.sample_rows, len(df_train)),
+            random_state=42
+        )
+
+    print("Train shape:", df_train.shape)
+
+    # --------------------------
+    # Preprocess
+    # --------------------------
+    X, y = preprocess(df_train)
+    df_new = pd.concat([X, y], axis=1)
+
+    if 'APR_MDC' not in df_new.columns:
+        raise ValueError("APR_MDC missing")
+
+    # --------------------------
+    # Train generator
+    # --------------------------
+    generator = AutoRegressiveGenerator(alpha=1.0)
+    generator.fit(df_new)
+    generator.fit_globals(df_new)
+
+    # --------------------------
+    # Generate synthetic data
+    # --------------------------
+    apr_vals = df_new['APR_DRG']
+
+    if args.n_samples is not None:
+        apr_vals = apr_vals.sample(
+            n=min(args.n_samples, len(apr_vals)),
+            replace=True
+        )
+
+    synthetic_df = generator.generate(apr_vals)
+
+    # --------------------------
+    # Save output
+    # --------------------------
+    output_file = output_path / "synthetic_inpatient_reverse.csv"
+    synthetic_df.to_csv(output_file, index=False)
+
+    print(f"✅ Saved to {output_file}")
+    print("🎯 PIPELINE COMPLETED")
+
+
+# =====================================================
+# Entry Point
+# =====================================================
+def main():
+  if __name__ == "__main__":
+      parser = argparse.ArgumentParser()
+
+      parser.add_argument(
+          "--config",
+          type=str,
+          default=r"/content/drive/MyDrive/config/params.yaml"
+      )
+
+      parser.add_argument("--n_samples", type=int, default=None)
+      parser.add_argument("--sample_rows", type=int, default=None)
+
+      parser.add_argument("--epochs", type=int, default=1)
+      parser.add_argument("--num_processes", type=int, default=1)
+
+      args = parser.parse_args()
+
+      return(main_gen(args))
