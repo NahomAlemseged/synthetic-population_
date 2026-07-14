@@ -1,169 +1,669 @@
-import os
+import yaml
+import joblib
 import pandas as pd
 import numpy as np
-import joblib
-import yaml
-import mlflow
-import mlflow.sklearn
-import torch
 
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import classification_report, accuracy_score, f1_score
 
-# GPU / CPU detection
-GPU_AVAILABLE = torch.cuda.is_available()
-device = "GPU" if GPU_AVAILABLE else "CPU"
-print(f"⚡ Using device: {device}")
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    classification_report
+)
 
-# ML models
-from xgboost import XGBClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
+from scipy.spatial.distance import jensenshannon
 
-# Load config
-CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
-with open(CONFIG_PATH) as file:
-    params = yaml.safe_load(file)
 
-class TrainSynth:
+
+# ======================================================
+# CONFIG
+# ======================================================
+
+CONFIG_PATH = Path(
+    "/content/synthetic-population_/config/params.yaml"
+)
+
+
+with open(CONFIG_PATH) as f:
+    params = yaml.safe_load(f)
+
+
+
+# ======================================================
+# EVALUATION CLASS
+# ======================================================
+
+class EvaluateICD:
+
+
     def __init__(self):
-        self.input_path = params['train']['input'][0] if isinstance(params['train']['input'], list) else params['train_icd']['input']
-        self.output_path = Path(params['train']['output'][0] if isinstance(params['train']['output'], list) else params['train_icd']['output'])
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        self.model_file = self.output_path / "model.pkl"
 
-    def train_model(self):
-        # Load dataset
-        df = pd.read_csv(self.input_path, low_memory=False)
-        print(f">>> Loaded {len(df)} rows")
+        print("Starting ICD evaluation")
 
-        target_col = "PRINC_DIAG_CODE"
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
 
-        # Encode categorical columns
-        categorical_cols = X.select_dtypes(include='object').columns
-        encoders = {}
-        for col in categorical_cols:
-            le = LabelEncoder()
-            X[col] = le.fit_transform(X[col].astype(str))
-            encoders[col] = le
-
-        n_classes = len(np.unique(y))
-
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, stratify=y, random_state=42
+        self.output_path = Path(
+            params["evaluate"]["output"][0]
         )
 
-        # =========================
-        # Define experiments
-        # =========================
-        experiments = {}
 
-        # --- XGBoost (GPU A100 ready) ---
-        experiments["xgboost"] = {
-            "pipeline": Pipeline([
-                ("model", XGBClassifier(
-                    objective="multi:softprob",
-                    num_class=n_classes,
-                    eval_metric="mlogloss",
-                    random_state=42,
-                    tree_method="gpu_hist",  # GPU acceleration
-                    n_jobs=-1
-                ))
-            ]),
-            "params": {
-                "model__n_estimators": [200, 400]
+        self.report_path = (
+            self.output_path /
+            "reports"
+        )
+
+        self.report_path.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+
+        files=params["evaluate"]["input"]
+
+
+
+        # -------------------------------
+        # Load datasets
+        # -------------------------------
+
+        print("\nLoading datasets")
+
+
+        self.synthetic=pd.read_csv(
+            files[0],
+            low_memory=False
+        )
+
+
+        self.test=pd.read_csv(
+            files[1],
+            low_memory=False
+        )
+
+
+        self.train=pd.read_csv(
+            files[2],
+            low_memory=False
+        )
+
+
+
+        print(
+            "Synthetic:",
+            self.synthetic.shape
+        )
+
+        print(
+            "Test:",
+            self.test.shape
+        )
+
+        print(
+            "Train:",
+            self.train.shape
+        )
+
+
+
+        # -------------------------------
+        # Load model
+        # -------------------------------
+
+        print("\nLoading model")
+
+
+        bundle=joblib.load(
+            files[3]
+        )
+
+
+        print(
+            "Bundle keys:",
+            bundle.keys()
+        )
+
+
+        self.model=bundle["model"]
+
+        self.features=bundle["features"]
+
+
+
+        # ==================================================
+        # Detect model format
+        # ==================================================
+
+        if "feature_encoders" in bundle:
+
+
+            print(
+                "Using NEW training format"
+            )
+
+
+            self.feature_encoders = (
+                bundle["feature_encoders"]
+            )
+
+
+            self.target_encoder = (
+                bundle["target_encoder"]
+            )
+
+
+            self.old_format=False
+
+
+
+        elif "encoder" in bundle:
+
+
+            print(
+                "Using OLD training format"
+            )
+
+
+            self.encoder=bundle["encoder"]
+
+            self.mapping=bundle.get(
+                "mapping",
+                {}
+            )
+
+            self.old_format=True
+
+
+
+        else:
+
+            raise ValueError(
+                "Unknown model bundle format"
+            )
+
+
+
+
+
+    # ======================================================
+    # CLEAN
+    # Same as train
+    # ======================================================
+
+    def clean_data(self,df):
+
+        df=df.copy()
+
+
+        target="PRINC_DIAG_CODE"
+
+
+        df=df[
+            df[target].notna()
+        ]
+
+
+        df[target]=(
+            df[target]
+            .astype(str)
+            .str.strip()
+        )
+
+
+        df=df[
+            df[target]!="UNKNOWN"
+        ]
+
+
+
+        # AGE cleaning
+
+        df["PAT_AGE"]=(
+            df["PAT_AGE"]
+            .astype(str)
+            .str.replace(
+                r"\D",
+                "",
+                regex=True
+            )
+        )
+
+
+        df["PAT_AGE"]=pd.to_numeric(
+            df["PAT_AGE"],
+            errors="coerce"
+        )
+
+
+        df=df[
+            df["PAT_AGE"].notna()
+        ]
+
+
+        return df
+
+
+
+
+
+    # ======================================================
+    # FEATURE ENCODING
+    # ======================================================
+
+    def encode_features(self,df):
+
+
+        df=df.copy()
+
+
+
+        # -------------------------------
+        # New format
+        # -------------------------------
+
+        if not self.old_format:
+
+
+            for col,encoder in self.feature_encoders.items():
+
+
+                if col in df.columns:
+
+
+                    df[col]=(
+                        df[col]
+                        .astype(str)
+                    )
+
+
+                    known=set(
+                        encoder.classes_
+                    )
+
+
+                    df[col]=df[col].apply(
+                        lambda x:
+                        x if x in known
+                        else encoder.classes_[0]
+                    )
+
+
+                    df[col]=encoder.transform(
+                        df[col]
+                    )
+
+
+
+        # -------------------------------
+        # Old format
+        # -------------------------------
+
+        else:
+
+
+            cols=list(
+                self.encoder.feature_names_in_
+            )
+
+
+            temp=df[cols].copy()
+
+
+            temp=temp.astype(str)
+
+
+            encoded=self.encoder.transform(
+                temp
+            )
+
+
+            encoded=pd.DataFrame(
+                encoded,
+                columns=cols,
+                index=df.index
+            )
+
+
+            for c in cols:
+
+                df[c]=encoded[c]
+
+
+
+        return df
+
+
+
+
+    # ======================================================
+    # PREPROCESS
+    # ======================================================
+
+    def preprocess(self,df):
+
+
+        df=self.clean_data(
+            df
+        )
+
+
+        df=self.encode_features(
+            df
+        )
+
+
+
+        X=df[
+            self.features
+        ].copy()
+
+
+
+        for c in X.columns:
+
+            X[c]=pd.to_numeric(
+                X[c],
+                errors="coerce"
+            )
+
+
+
+        X=X.fillna(-1)
+
+
+
+        # target
+
+        if not self.old_format:
+
+
+            y=self.target_encoder.transform(
+                df["PRINC_DIAG_CODE"]
+            )
+
+
+
+        else:
+
+
+            y=df["PRINC_DIAG_CODE"].map(
+                self.mapping
+            )
+
+
+            valid=y.notna()
+
+
+            X=X.loc[valid]
+
+            y=y.loc[valid]
+
+
+            y=y.astype(int)
+
+
+
+        return X,y
+
+
+
+
+
+    # ======================================================
+    # DISTRIBUTION
+    # ======================================================
+
+    def js_similarity(self,a,b,name):
+
+
+        p=a.value_counts(
+            normalize=True
+        )
+
+
+        q=b.value_counts(
+            normalize=True
+        )
+
+
+        idx=p.index.union(
+            q.index
+        )
+
+
+        p=p.reindex(
+            idx,
+            fill_value=0
+        )
+
+
+        q=q.reindex(
+            idx,
+            fill_value=0
+        )
+
+
+        js=jensenshannon(
+            p.values,
+            q.values
+        )
+
+
+        score=(1-js)*100
+
+
+        print(
+            name,
+            ":",
+            round(score,2)
+        )
+
+
+        return score
+
+
+
+
+
+    def evaluate_distribution(self):
+
+
+        print(
+            "\nDistribution evaluation"
+        )
+
+
+        eval_df=pd.concat(
+            [
+                self.synthetic,
+                self.test
+            ],
+            ignore_index=True
+        )
+
+
+        results={}
+
+
+        for col in [
+
+            "PRINC_DIAG_CODE",
+            "SEX_CODE",
+            "RACE",
+            "ETHNICITY",
+            "APR_MDC"
+
+        ]:
+
+
+            results[col]=self.js_similarity(
+                eval_df[col],
+                self.train[col],
+                col
+            )
+
+
+
+        pd.DataFrame(
+            {
+                "Feature":results.keys(),
+                "Similarity":results.values()
             }
-        }
+        ).to_csv(
+            self.report_path /
+            "distribution_similarity.csv",
+            index=False
+        )
 
-        # --- Random Forest ---
-        experiments["random_forest"] = {
-            "pipeline": Pipeline([
-                ("model", RandomForestClassifier(
-                    random_state=42,
-                    n_jobs=-1
-                ))
-            ]),
-            "params": {
-                "model__n_estimators": [200, 400],
-                "model__max_depth": [None, 20],
-                "model__min_samples_split": [2, 5]
-            }
-        }
 
-        # --- Logistic Regression ---
-        experiments["logistic_regression"] = {
-            "pipeline": Pipeline([
-                ("scaler", StandardScaler()),
-                ("model", LogisticRegression(
-                    multi_class="multinomial",
-                    max_iter=1000,
-                    n_jobs=-1,
-                    solver="saga"
-                ))
-            ]),
-            "params": {
-                "model__C": [0.1, 1, 10]
-            }
-        }
 
-        # =========================
-        # MLflow Experiment
-        # =========================
-        mlflow.set_experiment("APR_MDC_multiclass")
-        best_score = 0
 
-        for name, exp in experiments.items():
-            with mlflow.start_run(run_name=name):
-                print(f"\n🚀 Training {name} on {device}")
 
-                grid = GridSearchCV(
-                    exp["pipeline"],
-                    exp["params"],
-                    scoring="f1_weighted",
-                    cv=3,
-                    n_jobs=-1,
-                    verbose=1,
-                    error_score='raise'  # will stop immediately if something fails
-                )
+    # ======================================================
+    # MODEL EVALUATION
+    # ======================================================
 
-                grid.fit(X_train, y_train)
-                y_pred = grid.predict(X_test)
+    def evaluate_accuracy(self):
 
-                acc = accuracy_score(y_test, y_pred)
-                f1 = f1_score(y_test, y_pred, average="weighted")
-                print(classification_report(y_test, y_pred))
 
-                # MLflow logging
-                mlflow.log_params(grid.best_params_)
-                mlflow.log_metric("accuracy", acc)
-                mlflow.log_metric("f1_weighted", f1)
-                mlflow.sklearn.log_model(grid.best_estimator_, artifact_path="model")
+        print(
+            "\nModel evaluation"
+        )
 
-                if f1 > best_score:
-                    best_score = f1
-                    best_overall = grid.best_estimator_
 
-        # Save best model
-        joblib.dump({
-            "model": best_overall,
-            "features": X.columns.tolist(),
-            "encoders": encoders
-        }, self.model_file)
 
-        print(f"\n✅ Best model saved to {self.model_file}")
-        print(f"🏆 Best weighted F1: {best_score:.4f}")
+        eval_df=pd.concat(
+            [
+                self.synthetic,
+                self.test
+            ],
+            ignore_index=True
+        )
 
+
+
+        X,y=self.preprocess(
+            eval_df
+        )
+
+
+        print(
+            "Evaluation X:",
+            X.shape
+        )
+
+
+        print(
+            "Classes:",
+            len(np.unique(y))
+        )
+
+
+
+        pred=self.model.predict(
+            X
+        )
+
+
+
+        acc=accuracy_score(
+            y,
+            pred
+        )
+
+
+        f1w=f1_score(
+            y,
+            pred,
+            average="weighted",
+            zero_division=0
+        )
+
+
+        f1m=f1_score(
+            y,
+            pred,
+            average="macro",
+            zero_division=0
+        )
+
+
+
+        print("\nAccuracy:",acc)
+
+        print(
+            "Weighted F1:",
+            f1w
+        )
+
+        print(
+            "Macro F1:",
+            f1m
+        )
+
+
+
+        report=classification_report(
+            y,
+            pred,
+            zero_division=0
+        )
+
+
+        print(report)
+
+
+
+        with open(
+            self.report_path /
+            "model_report.txt",
+            "w"
+        ) as f:
+
+
+            f.write(
+                f"Accuracy: {acc}\n"
+            )
+
+            f.write(
+                f"Weighted F1: {f1w}\n"
+            )
+
+            f.write(
+                f"Macro F1: {f1m}\n\n"
+            )
+
+            f.write(
+                report
+            )
+
+
+
+
+
+    # ======================================================
+    # RUN
+    # ======================================================
+
+    def run(self):
+
+        self.evaluate_distribution()
+
+        self.evaluate_accuracy()
+
+
+
+
+# ======================================================
+# MAIN
+# ======================================================
 
 def main():
-    trainer = TrainSynth()
-    trainer.train_model()
+
+    evaluator=EvaluateICD()
+
+    evaluator.run()
 
 
-if __name__ == "__main__":
+
+if __name__=="__main__":
+
     main()
