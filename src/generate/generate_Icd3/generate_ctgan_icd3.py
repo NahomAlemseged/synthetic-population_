@@ -1,214 +1,479 @@
+import time
+from pathlib import Path
+
 import pandas as pd
 import yaml
-from pathlib import Path
 from ctgan import CTGAN
 from joblib import parallel_backend
-import time
 
 
-# --------------------------
+# ==========================================================
 # CONFIG
-# --------------------------
+# ==========================================================
+
 CONFIG_PATH = Path("/content/synthetic-population_/config/params.yaml")
 
 with open(CONFIG_PATH, "r") as f:
     params = yaml.safe_load(f)
 
-train_path = params["generate_icd"]["input"][0]
-pop_path = params["generate_icd"]["input"][1]
 
-TRAIN_PATH = Path(train_path)
-POP_PATH = Path(pop_path)
+TRAIN_PATH = Path(params["generate_icd"]["input"][0])
+POP_PATH = Path(params["generate_icd"]["input"][1])
 
 OUTPUT_PATH = Path(params["generate_icd"]["output"])
-OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
+OUTPUT_PATH.mkdir(
+    parents=True,
+    exist_ok=True
+)
 
-OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd_3.csv"
+OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd3.csv"
 
-# 🔥 SETTINGS
-# TRAIN_SAMPLE_SIZE = 500000   # for CTGAN training
-POOL_MULTIPLIER = 3          # how large synthetic pool is
-df_train = pd.read_csv(train_path, dtype=str)
-df_pop = pd.read_csv(pop_path, dtype=str)
 
-# --------------------------
-# ICD Generator
-# --------------------------
+POOL_MULTIPLIER = 3
+EPOCHS = 10
+
+
+
+# ==========================================================
+# ICD GENERATOR
+# ==========================================================
+
 class ICDGenerator:
+
+
     def __init__(self, train_path, pop_path):
+
         self.train_path = train_path
         self.pop_path = pop_path
 
-    def load_data(self):
-        df_train = pd.read_csv(self.train_path, dtype=str)
-        df_pop = pd.read_csv(self.pop_path, dtype=str)
 
-        print(f"📊 Train shape: {df_train.shape}")
-        print(f"📊 Population shape: {df_pop.shape}")
+
+    # ------------------------------------------------------
+    # LOAD DATA
+    # ------------------------------------------------------
+
+    def load_data(self):
+
+        df_train = pd.read_csv(
+            self.train_path,
+            dtype=str
+        )
+
+        df_pop = pd.read_csv(
+            self.pop_path,
+            dtype=str
+        )
+
+
+        # clean headers
+
+        df_train.columns = (
+            df_train.columns
+            .str.strip()
+        )
+
+        df_pop.columns = (
+            df_pop.columns
+            .str.strip()
+        )
+
+
+        print(
+            f"Training shape   : {df_train.shape}"
+        )
+
+        print(
+            f"Population shape : {df_pop.shape}"
+        )
+
 
         return df_train, df_pop
-    
-    def extract_icd3(df_): 
-      df = df_.copy()
-      df["ICD3"] = df["PRINC_DIAG_CODE"].str.extract(r"([A-Z]\d{2})")
-      df.drop(columns = ["PRINC_DIAG_CODE"], inplace = True)
-      print("ICD three digit created: PRINC_DIAG_CODE dropped")
-      return df
-  
-    def sample_training_data(self, df_train):
-        # N = min(TRAIN_SAMPLE_SIZE, len(df_train))
-        N = len(df_pop)
-        df_train_sampled = df_train.sample(n=N, random_state=42)
 
-        print(f"⚡ Training on {N:,} sampled rows")
-        return df_train_sampled
 
-    def prepare_training_data(self, df_train, features, target_col):
-        columns = features + [target_col]
 
-        df_train = df_train[columns].dropna()
+    # ------------------------------------------------------
+    # CREATE ICD3 ONLY FROM TRAINING DATA
+    # ------------------------------------------------------
 
-        for col in columns:
-            df_train[col] = df_train[col].astype("category")
+    @staticmethod
+    def extract_icd3(df):
 
-        return df_train
+        df = df.copy()
 
-    def train_ctgan(self, df_train, columns, epochs=10):
-        print(f"🚀 Training CTGAN on {len(df_train):,} rows...")
 
-        batch_size = 100
-        pac = 10
+        if "PRINC_DIAG_CODE" not in df.columns:
 
-        if batch_size % pac != 0:
-            batch_size -= (batch_size % pac)
+            raise ValueError(
+                "PRINC_DIAG_CODE missing from training data"
+            )
 
-        ctgan = CTGAN(
+
+        df["ICD3"] = (
+            df["PRINC_DIAG_CODE"]
+            .astype(str)
+            .str.upper()
+            .str.extract(
+                r"([A-Z]\d{2})",
+                expand=False
+            )
+        )
+
+
+        df.drop(
+            columns=["PRINC_DIAG_CODE"],
+            inplace=True
+        )
+
+
+        return df
+
+
+
+    # ------------------------------------------------------
+    # SAMPLE TRAINING
+    # ------------------------------------------------------
+
+    @staticmethod
+    def sample_training(df_train, n):
+
+        n = min(
+            n,
+            len(df_train)
+        )
+
+
+        print(
+            f"Training sample size: {n:,}"
+        )
+
+
+        return df_train.sample(
+            n=n,
+            random_state=42
+        )
+
+
+
+    # ------------------------------------------------------
+    # PREPARE CTGAN DATA
+    # ------------------------------------------------------
+
+    @staticmethod
+    def prepare_training(
+            df,
+            features,
+            target):
+
+
+        cols = features + [target]
+
+
+        df = (
+            df[cols]
+            .dropna()
+            .copy()
+        )
+
+
+        for col in cols:
+
+            df[col] = (
+                df[col]
+                .astype(str)
+            )
+
+
+        print(
+            "CTGAN training data:",
+            df.shape
+        )
+
+
+        return df
+
+
+
+    # ------------------------------------------------------
+    # TRAIN CTGAN
+    # ------------------------------------------------------
+
+    @staticmethod
+    def train_ctgan(
+            df,
+            discrete_columns,
+            epochs):
+
+
+        print(
+            "Training CTGAN..."
+        )
+
+
+        model = CTGAN(
             epochs=epochs,
-            batch_size=batch_size,
+            batch_size=100,
             verbose=True
         )
 
-        with parallel_backend("threading", n_jobs=4):
-            ctgan.fit(df_train, discrete_columns=columns)
 
-        print("✅ CTGAN training complete")
-        return ctgan
+        with parallel_backend(
+            "threading",
+            n_jobs=4
+        ):
 
-    def generate_pool(self, ctgan, n_samples):
-        print(f"🔹 Generating synthetic ICD pool ({n_samples:,})...")
-        return ctgan.sample(n_samples)
+            model.fit(
+                df,
+                discrete_columns=discrete_columns
+            )
 
-    def match_icd(self, df_pop, synthetic_pool, target_col):
-        print("🔹 Matching ICD codes...")
 
-        merge_cols = [
-            "APR_MDC",
-            "SEX_CODE",
-            "PAT_AGE",
-            "RACE",
-            "ETHNICITY",
-            "PAT_ZIP",
-            "PAT_COUNTY",
-            "PUBLIC_HEALTH_REGION",
-            "FIRST_PAYMENT_SRC",
-            "EMERGENCY_DEPT_FLAG"
-        ]
-    
-        df_merged = df_pop.merge(
+        print(
+            "CTGAN training finished"
+        )
+
+
+        return model
+
+
+
+    # ------------------------------------------------------
+    # GENERATE ICD POOL
+    # ------------------------------------------------------
+
+    @staticmethod
+    def generate_pool(
+            model,
+            n):
+
+
+        print(
+            f"Generating synthetic ICD pool: {n:,}"
+        )
+
+
+        return model.sample(n)
+
+
+
+    # ------------------------------------------------------
+    # MATCH ICD TO POPULATION
+    # ------------------------------------------------------
+
+    @staticmethod
+    def assign_icd(
+            df_pop,
+            synthetic_pool,
+            merge_cols):
+
+
+        print(
+            "Assigning ICD3..."
+        )
+
+
+        df = df_pop.merge(
             synthetic_pool,
             on=merge_cols,
             how="left"
         )
 
-        missing = df_merged[target_col].isna().sum()
-        print(f"⚠️ Missing ICD: {missing}")
+
+        missing = (
+            df["ICD3"]
+            .isna()
+            .sum()
+        )
+
+
+        print(
+            f"Missing ICD3 after match: {missing:,}"
+        )
+
+
+        # fallback
 
         if missing > 0:
-            fallback = synthetic_pool[target_col].sample(
-                missing, replace=True, random_state=42
-            ).values
-            df_merged.loc[df_merged[target_col].isna(), target_col] = fallback
 
-        # ✅ Add source column
-        df_merged["ICD_SOURCE"] = "CTGAN"
+            fallback = (
+                synthetic_pool["ICD3"]
+                .sample(
+                    missing,
+                    replace=True,
+                    random_state=42
+                )
+                .values
+            )
 
-        return df_merged
+
+            df.loc[
+                df["ICD3"].isna(),
+                "ICD3"
+            ] = fallback
 
 
-# --------------------------
+
+        df["ICD_SOURCE"] = "CTGAN"
+
+
+        return df
+
+
+
+
+# ==========================================================
 # MAIN
-# --------------------------
-def main():
-    print("⚙️ Starting ICD generation pipeline...")
+# ==========================================================
 
-    start_time = time.time()
+
+def main():
+
+
+    start = time.time()
+
+
 
     features = [
+
+        "APR_MDC",
         "SEX_CODE",
         "PAT_AGE",
         "RACE",
         "ETHNICITY",
         "PAT_ZIP",
         "PAT_COUNTY",
-        "PUBLIC_HEALTH_REGION",
-        "APR_MDC"
+        "PUBLIC_HEALTH_REGION"
+
     ]
 
-    target_col = "ICD3"
 
-    generator = ICDGenerator(TRAIN_PATH, POP_PATH)
-
-    # Step 1: Load data
-    df_train, df_pop = generator.load_data()
-    df_train = extract_icd3(df_train)
-    df_pop = extract_icd3(df_pop)
-  
-  
-
-    # Step 2: Sample training data (🔥 key step)
-    df_train_sampled = generator.sample_training_data(df_train)
-
-    # Step 3: Prepare training data
-    df_train_prepared = generator.prepare_training_data(
-        df_train_sampled, features, target_col
+    generator = ICDGenerator(
+        TRAIN_PATH,
+        POP_PATH
     )
 
-    columns = features + [target_col]
 
-    # Step 4: Train CTGAN
-    ctgan_model = generator.train_ctgan(
-        df_train_prepared,
-        columns,
-        epochs=10
+
+    # -----------------------------
+    # Load
+    # -----------------------------
+
+    df_train, df_pop = (
+        generator.load_data()
     )
 
-    # Step 5: Generate synthetic pool for FULL population
-    pool_size = int(len(df_pop) * POOL_MULTIPLIER)
 
-    synthetic_pool = generator.generate_pool(
-        ctgan_model,
-        pool_size
+
+    # -----------------------------
+    # ICD3 only training
+    # -----------------------------
+
+    df_train = (
+        generator.extract_icd3(
+            df_train
+        )
     )
 
-    synthetic_pool = synthetic_pool[columns]
 
-    # Step 6: Match ICD to ALL synthetic population
-    df_final = generator.match_icd(
+
+    # -----------------------------
+    # Train sample
+    # -----------------------------
+
+    df_train = generator.sample_training(
+        df_train,
+        len(df_pop)
+    )
+
+
+
+    # -----------------------------
+    # Prepare CTGAN
+    # -----------------------------
+
+    df_train = (
+        generator.prepare_training(
+            df_train,
+            features,
+            "ICD3"
+        )
+    )
+
+
+
+    # -----------------------------
+    # Train
+    # -----------------------------
+
+    model = generator.train_ctgan(
+        df_train,
+        features + ["ICD3"],
+        EPOCHS
+    )
+
+
+
+    # -----------------------------
+    # Generate ICD pool
+    # -----------------------------
+
+    synthetic_pool = (
+        generator.generate_pool(
+            model,
+            len(df_pop) * POOL_MULTIPLIER
+        )
+    )
+
+
+    synthetic_pool = synthetic_pool[
+        features + ["ICD3"]
+    ]
+
+
+
+    # -----------------------------
+    # Assign ICD
+    # -----------------------------
+
+    df_final = generator.assign_icd(
         df_pop,
         synthetic_pool,
-        target_col
+        features
     )
 
-    print(f"✅ Final dataset shape: {df_final.shape}")
 
-    # Step 7: Save
-    df_final.to_csv(OUTPUT_CSV, index=False)
 
-    end_time = time.time()
+    # -----------------------------
+    # Save
+    # -----------------------------
 
-    print(f"💾 Saved to: {OUTPUT_CSV}")
-    print(f"⏱️ Total time: {end_time - start_time:.2f} seconds")
+    df_final.to_csv(
+        OUTPUT_CSV,
+        index=False
+    )
+
+
+    elapsed = time.time() - start
+
+
+    print("\n========================")
+    print("DONE")
+    print("========================")
+    print(
+        "Saved:",
+        OUTPUT_CSV
+    )
+
+    print(
+        "Final shape:",
+        df_final.shape
+    )
+
+    print(
+        f"Time: {elapsed:.2f}s"
+    )
+
 
 
 if __name__ == "__main__":
+
     main()
