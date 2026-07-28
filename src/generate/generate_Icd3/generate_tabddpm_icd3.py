@@ -34,7 +34,7 @@ def main():
     print(f"Loading synthetic data from {synth_path}...")
     df_synth = pd.read_csv(synth_path, low_memory=False)
     df_synth = extract_icd(df_synth)
-    # Features to condition on for generating PRINC_DIAG_CODE
+    # Features to condition on for generating ICD3
     features = ['APR_MDC', 'SEX_CODE', 'PAT_AGE', 'LENGTH_OF_STAY']
     target = 'ICD3'
 
@@ -62,7 +62,7 @@ def main():
     X_real_encoded = encoder.fit_transform(X_real)
     y_real = df_real_clean[target].astype(str)
 
-    print("Training Nearest Neighbors to map PRINC_DIAG_CODE...")
+    print("Training Nearest Neighbors to map ICD3...")
     knn = KNeighborsClassifier(n_neighbors=3, weights='distance', n_jobs=-1)
     knn.fit(X_real_encoded, y_real)
 
@@ -74,11 +74,11 @@ def main():
 
     X_synth_encoded = encoder.transform(X_synth)
 
-    print("Predicting PRINC_DIAG_CODE for synthetic data...")
+    print("Predicting ICD3 for synthetic data...")
     synth_preds = knn.predict(X_synth_encoded)
 
     # Add the generated codes
-    df_synth['PRINC_DIAG_CODE'] = synth_preds
+    df_synth['ICD3'] = synth_preds
 
     print(f"Saving generated data to {out_path}...")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
