@@ -43,7 +43,13 @@ class GenerateML:
     def _load(self, path):
         df = pd.read_csv(path, low_memory=False)
         return df
-
+    
+    def extract_icd3(df_): 
+      df = df_.copy()
+      df["ICD3"] = df["_DIAG_CODE"].str.extract(r"([A-Z]\d{2})")
+      df.drop(columns = ["PRINC_DIAG_CODE"], inplace = True)
+      print(f"ICD three digit created : PRINC_DIAG_CODE dropped for {df_} ...")
+      return df 
     # --------------------------
     # FAST VECTOR ENCODING
     # --------------------------
@@ -70,14 +76,18 @@ class GenerateML:
     # --------------------------
     # MAIN
     # --------------------------
-    def train_and_generate(self, target_col="PRINC_DIAG_CODE"):
+    def train_and_generate(self, target_col="ICD3"):
 
         print("⚙️ Loading data...")
 
         df_train = self._load(self.train_path)
         df_test  = self._load(self.test_path)
         df_syn   = self._load(self.synth_path)
-
+        
+        df_train = self.extract_icd3(df_train)
+        df_test = self.extract_icd3(df_test)
+        df_syn = self.extract_icd3(df_syn)
+        
         df_syn = df_syn.drop(columns=[target_col], errors="ignore")
 
         # --------------------------
