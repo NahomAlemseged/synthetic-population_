@@ -1,1 +1,95 @@
+%%writefile /content/synthetic-population_/src/generate/generate_Icd3/generate_Ml_Icd3.py
+import pandas as pd
+import numpy as np
+import os
+import yaml
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import OrdinalEncoder
 
+def load_config(config_path="/content/synthetic-population_/config/params.yaml"):
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    return {}
+
+def main():
+    config = load_config()
+    # Fallbacks to known paths in case config doesn't specify them
+    data_dir = config.get('data_dir', '/content/drive/MyDrive/data_THCIC/gold')
+    train_path = os.path.join(data_dir, 'train.csv')
+
+    generated_dir = os.path.join(data_dir, 'generated')
+    # The previous step generated 'synthetic_inpatient_with_tabddpm.csv'
+    synth_input_path = os.path.join(generated_dir, 'synthetic_inpatient_with_tabddpm.csv')
+    # Output file name as per src/main.py comments
+    out_path = os.path.join(generated_dir, 'synthetic_population_with_icd3.csv')
+
+    print(f"Loading real data from {train_path}...")
+    df_real = pd.read_csv(train_path, low_memory=False)
+
+    print(f"Loading synthetic data from {synth_input_path}...")
+    df_synth = pd.read_csv(synth_input_path, low_memory=False)
+
+    # Features to condition on for generating PRINC_DIAG_CODE
+    features = ['APR_MDC', 'SEX_CODE', 'PAT_AGE', 'LENGTH_OF_STAY']
+    target = 'PRINC_DIAG_CODE'
+
+    # Clean PAT_AGE in both real and synthetic dataframes
+    for df in [df_real, df_synth]:
+        if 'PAT_AGE' in df.columns:
+            df['PAT_AGE'] = df['PAT_AGE'].astype(str).str.replace(r'\\D', '', regex=True)
+            df['PAT_AGE'] = pd.to_numeric(df['PAT_AGE'], errors='coerce').fillna(0)
+
+    # Drop missing targets in real data for training the mapping model
+    df_real_clean = df_real.dropna(subset=[target] + features).copy()
+
+    # Ensure features are present in synthetic data, fill NaNs if any (before encoding)
+    for col in features:
+        if col not in df_synth.columns:
+            # Handle case where a feature might be missing in synthetic data
+            # This is a basic fallback, more robust handling might be needed
+            print(f"Warning: Feature '{col}' not found in synthetic data. Filling with mode from real data.")
+            df_synth[col] = df_real_clean[col].mode()[0]
+        df_synth[col] = df_synth[col].fillna(df_real_clean[col].mode()[0])
+
+    # Sample real data for KNN training to keep memory/time reasonable if dataset is too large
+    if len(df_real_clean) > 500000:
+        df_real_clean = df_real_clean.sample(500000, random_state=42)
+
+    print("Encoding categorical variables...")
+    # OrdinalEncoder for handling mixed types as strings
+    encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+
+    # Prepare training features
+    X_real = df_real_clean[features].copy()
+    for col in features:
+        X_real[col] = X_real[col].astype(str)
+
+    X_real_encoded = encoder.fit_transform(X_real)
+    y_real = df_real_clean[target].astype(str)
+
+    print("Training Nearest Neighbors to map PRINC_DIAG_CODE...")
+    knn = KNeighborsClassifier(n_neighbors=3, weights='distance', n_jobs=-1) # Use all available cores
+    knn.fit(X_real_encoded, y_real)
+
+    print("Preparing synthetic data features for prediction...")
+    X_synth = df_synth[features].copy()
+    for col in features:
+        X_synth[col] = X_synth[col].astype(str)
+
+    X_synth_encoded = encoder.transform(X_synth)
+
+    print("Predicting PRINC_DIAG_CODE for synthetic data...")
+    synth_preds = knn.predict(X_synth_encoded)
+
+    # Add the generated codes to the synthetic dataframe
+    df_synth['PRINC_DIAG_CODE'] = synth_preds
+
+    print(f"Saving generated data to {out_path}...")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    df_synth.to_csv(out_path, index=False)
+    print("Done!")
+    print(f"Dataset shape: {df_synth.shape}")
+
+if __name__ == "__main__":
+    main()
