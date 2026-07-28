@@ -46,12 +46,13 @@ generate_drg:
     -  "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
     
+    
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/"  # synthetic data on Drive
 
 generate_icd:
   input: 
     -  "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population/synthetic_inpatient_with_drg.csv"
+    -  "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
     
   output: "/content/drive/MyDrive/data_THCIC/gold/generated/"  # synthetic data on Drive
 
@@ -76,6 +77,7 @@ train:
   input: 
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
+      
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
