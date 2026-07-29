@@ -1,95 +1,159 @@
-%%writefile /content/synthetic-population_/src/generate/generate_Icd3/generate_Ml_Icd3.py
 import pandas as pd
 import numpy as np
-import os
 import yaml
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import OrdinalEncoder
+import mlflow
+from pathlib import Path
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
 
-def load_config(config_path="/content/synthetic-population_/config/params.yaml"):
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-    return {}
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
+with open("config/params.yaml") as f:
+    params = yaml.safe_load(f)
 
+TRAIN = Path(params["evaluate"]["input"][1])
+TEST = Path(params["evaluate"]["input"][2])
+SYNTH = Path(params["generate_icd"]["input"][1])
+
+OUT_DIR = Path(params["generate_icd"]["output"])
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+OUTPUT = OUT_DIR / "synthetic_population_with_ICD3_RF.csv"
+
+SAMPLE_SIZE = 100000
+
+FEATURES = [
+    "APR_MDC",
+    "SEX_CODE",
+    "PAT_AGE",
+    "RACE",
+    "ETHNICITY",
+    "PAT_ZIP",
+    "PAT_COUNTY",
+    "PUBLIC_HEALTH_REGION",
+    # "FIRST_PAYMENT_SRC",
+    # "EMERGENCY_DEPT_FLAG",
+]
+
+TARGET = "ICD3"
+
+
+# --------------------------------------------------
+# HELPERS
+# --------------------------------------------------
+def load(path):
+    df = pd.read_csv(path, low_memory=False)
+    df.columns = df.columns.str.strip()
+    return df
+
+
+def extract_icd3(df):
+    df = df.copy()
+
+    if "PRINC_DIAG_CODE" not in df.columns:
+        raise ValueError("PRINC_DIAG_CODE missing.")
+
+    df[TARGET] = (
+        df["PRINC_DIAG_CODE"]
+        .astype(str)
+        .str.upper()
+        .str.extract(r"([A-Z]\d{2})", expand=False)
+    )
+
+    return df.drop(columns="PRINC_DIAG_CODE")
+
+
+def encode(train, test, synth):
+
+    for c in FEATURES:
+
+        vals = pd.concat([
+            train[c],
+            test[c],
+            synth[c]
+        ]).fillna("UNK").astype(str).unique()
+
+        m = {v: i for i, v in enumerate(vals)}
+
+        train[c] = train[c].fillna("UNK").astype(str).map(m)
+        test[c] = test[c].fillna("UNK").astype(str).map(m)
+        synth[c] = synth[c].fillna("UNK").astype(str).map(m)
+
+    return train, test, synth
+
+
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 def main():
-    config = load_config()
-    # Fallbacks to known paths in case config doesn't specify them
-    data_dir = config.get('data_dir', '/content/drive/MyDrive/data_THCIC/gold')
-    train_path = os.path.join(data_dir, 'train.csv')
 
-    generated_dir = os.path.join(data_dir, 'generated')
-    # The previous step generated 'synthetic_inpatient_with_tabddpm.csv'
-    synth_input_path = os.path.join(generated_dir, 'synthetic_inpatient_with_tabddpm.csv')
-    # Output file name as per src/main.py comments
-    out_path = os.path.join(generated_dir, 'synthetic_population_with_icd3.csv')
+    print("Loading data...")
 
-    print(f"Loading real data from {train_path}...")
-    df_real = pd.read_csv(train_path, low_memory=False)
+    train = extract_icd3(load(TRAIN))
+    test = extract_icd3(load(TEST))
+    synth = load(SYNTH)
 
-    print(f"Loading synthetic data from {synth_input_path}...")
-    df_synth = pd.read_csv(synth_input_path, low_memory=False)
+    train = train.dropna(subset=[TARGET]).sample(min(SAMPLE_SIZE, len(train)), random_state=42)
+    test = test.dropna(subset=[TARGET]).sample(min(SAMPLE_SIZE, len(test)), random_state=42)
+    synth = synth.sample(min(SAMPLE_SIZE, len(synth)), random_state=42)
 
-    # Features to condition on for generating PRINC_DIAG_CODE
-    features = ['APR_MDC', 'SEX_CODE', 'PAT_AGE', 'LENGTH_OF_STAY']
-    target = 'PRINC_DIAG_CODE'
+    train, test, synth = encode(train, test, synth)
 
-    # Clean PAT_AGE in both real and synthetic dataframes
-    for df in [df_real, df_synth]:
-        if 'PAT_AGE' in df.columns:
-            df['PAT_AGE'] = df['PAT_AGE'].astype(str).str.replace(r'\\D', '', regex=True)
-            df['PAT_AGE'] = pd.to_numeric(df['PAT_AGE'], errors='coerce').fillna(0)
+    X_train = train[FEATURES]
+    X_test = test[FEATURES]
+    X_syn = synth[FEATURES]
 
-    # Drop missing targets in real data for training the mapping model
-    df_real_clean = df_real.dropna(subset=[target] + features).copy()
+    y_train = train[TARGET].astype(str)
+    y_test = test[TARGET].astype(str)
 
-    # Ensure features are present in synthetic data, fill NaNs if any (before encoding)
-    for col in features:
-        if col not in df_synth.columns:
-            # Handle case where a feature might be missing in synthetic data
-            # This is a basic fallback, more robust handling might be needed
-            print(f"Warning: Feature '{col}' not found in synthetic data. Filling with mode from real data.")
-            df_synth[col] = df_real_clean[col].mode()[0]
-        df_synth[col] = df_synth[col].fillna(df_real_clean[col].mode()[0])
+    keep = y_test.isin(y_train.unique())
 
-    # Sample real data for KNN training to keep memory/time reasonable if dataset is too large
-    if len(df_real_clean) > 500000:
-        df_real_clean = df_real_clean.sample(500000, random_state=42)
+    X_test = X_test.loc[keep]
+    y_test = y_test.loc[keep]
 
-    print("Encoding categorical variables...")
-    # OrdinalEncoder for handling mixed types as strings
-    encoder = OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1)
+    enc = LabelEncoder()
 
-    # Prepare training features
-    X_real = df_real_clean[features].copy()
-    for col in features:
-        X_real[col] = X_real[col].astype(str)
+    y_train = enc.fit_transform(y_train)
+    y_test = enc.transform(y_test)
 
-    X_real_encoded = encoder.fit_transform(X_real)
-    y_real = df_real_clean[target].astype(str)
+    print("Training Random Forest...")
 
-    print("Training Nearest Neighbors to map PRINC_DIAG_CODE...")
-    knn = KNeighborsClassifier(n_neighbors=3, weights='distance', n_jobs=-1) # Use all available cores
-    knn.fit(X_real_encoded, y_real)
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=20,
+        random_state=42,
+        n_jobs=-1
+    )
 
-    print("Preparing synthetic data features for prediction...")
-    X_synth = df_synth[features].copy()
-    for col in features:
-        X_synth[col] = X_synth[col].astype(str)
+    mlflow.set_experiment("ICD3_RF")
 
-    X_synth_encoded = encoder.transform(X_synth)
+    with mlflow.start_run():
 
-    print("Predicting PRINC_DIAG_CODE for synthetic data...")
-    synth_preds = knn.predict(X_synth_encoded)
+        model.fit(X_train, y_train)
 
-    # Add the generated codes to the synthetic dataframe
-    df_synth['PRINC_DIAG_CODE'] = synth_preds
+        pred = model.predict(X_test)
 
-    print(f"Saving generated data to {out_path}...")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    df_synth.to_csv(out_path, index=False)
-    print("Done!")
-    print(f"Dataset shape: {df_synth.shape}")
+        acc = accuracy_score(y_test, pred)
+
+        print(classification_report(y_test, pred))
+
+        print(f"Accuracy = {acc:.4f}")
+
+        mlflow.log_metric("accuracy", acc)
+
+    synth[TARGET] = enc.inverse_transform(
+        model.predict(X_syn)
+    )
+
+    synth["ICD_SOURCE"] = "RandomForest"
+
+    synth.to_csv(OUTPUT, index=False)
+
+    print(f"\nSaved to {OUTPUT}")
+    print(synth.head())
+
 
 if __name__ == "__main__":
     main()
