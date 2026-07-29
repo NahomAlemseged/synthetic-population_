@@ -76,7 +76,7 @@ validate:
 train:
   input: 
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population.csv"
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_with_apr_drg_gan.csv"
       
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
   output: 
@@ -95,3 +95,4 @@ evaluate:
 
   output:
     - "synthetic-population_/assets/"          # Evaluation outputs stay in repo
+
