@@ -2,14 +2,14 @@ import subprocess
 from datetime import datetime
 import os
 
-from src.etl.etl import main as etl_main
-from src.ingestion.ingest import main as ingest_main
-from src.generate.generate_apr_mdc.generate_ctgan import main as generate_main_mdc
-from src.generate.generate_drg.generate_drg_ctgan import main as generate_main_drg
-from src.generate.generate_icd.generate_GAN_icd import main as generate_main_icd
+# from src.etl.etl import main as etl_main
+# from src.ingestion.ingest import main as ingest_main
+# from src.generate.generate_apr_mdc.generate_ctgan import main as generate_main_mdc
+# from src.generate.generate_drg.generate_drg_ctgan import main as generate_main_drg
+from src.generate.generate_Icd3.generate_Ml_Icd3 import main as generate_main_icd3
 
-from src.validate.train import main as train_main
-from src.validate.evaluate import main as evaluate_main
+# from src.validate.train import main as train_main
+# from src.validate.evaluate import main as evaluate_main
 
 BASE_DIR = os.path.abspath(os.getcwd())
 
@@ -49,19 +49,19 @@ def main():
     # run_stage(ingest_main, "INGEST")
 
     # 4️⃣ Generate APR-MDC (GPU)
-    run_stage(generate_main_mdc, "GENERATE")
+    # run_stage(generate_main_mdc, "GENERATE")
 
     # 4️⃣ Generate APR-DRG (GPU)
-    run_stage(generate_main_icd, "GENERATE ICD")
+    run_stage(generate_main_icd3, "GENERATE ICD")
 
      # 4️⃣ Generate ICD-10 (GPU)
-    run_stage(generate_main_icd, "GENERATE ICD")
+    # run_stage(generate_main_icd, "GENERATE ICD")
 
-    # 5️⃣ Train (GPU)
-    run_stage(train_main, "TRAIN")
+    # # 5️⃣ Train (GPU)
+    # run_stage(train_main, "TRAIN")
 
-    # 6️⃣ Evaluate (CPU)
-    run_stage(evaluate_main, "EVALUATE")
+    # # 6️⃣ Evaluate (CPU)
+    # run_stage(evaluate_main, "EVALUATE")
 
     end_time = datetime.now()
     print(f"\nPIPELINE FINISHED AT {end_time}")
