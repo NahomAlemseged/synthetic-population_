@@ -26,7 +26,7 @@ OUTPUT_PATH.mkdir(
     exist_ok=True
 )
 
-OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_icd3.csv"
+OUTPUT_CSV = OUTPUT_PATH / "synthetic_population_with_ctgan_icd3.csv"
 
 
 POOL_MULTIPLIER = 3
@@ -341,7 +341,8 @@ def main():
         "ETHNICITY",
         "PAT_ZIP",
         "PAT_COUNTY",
-        "PUBLIC_HEALTH_REGION"
+        "PUBLIC_HEALTH_REGION",
+        "APR_DRG"
 
     ]
 
