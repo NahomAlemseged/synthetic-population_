@@ -44,7 +44,7 @@ OUTPUT.mkdir(
 
 MODEL_PATH = (
     OUTPUT /
-    "tabddpm_tstr_icd.pkl"
+    "ctgan_icd3.pkl"
 )
 
 
@@ -65,7 +65,7 @@ class ICDTrainer:
         )
 
 
-        self.target = "PRINC_DIAG_CODE"
+        self.target = "ICD3"
 
 
 
@@ -704,7 +704,7 @@ if __name__=="__main__":
 #         df=df.copy()
 
 
-#         target="PRINC_DIAG_CODE"
+#         target="ICD3_DIAG_CODE"
 
 
 #         df=df[
@@ -887,7 +887,7 @@ if __name__=="__main__":
 
 
 #             y=self.target_encoder.transform(
-#                 df["PRINC_DIAG_CODE"]
+#                 df["ICD3_DIAG_CODE"]
 #             )
 
 
@@ -895,7 +895,7 @@ if __name__=="__main__":
 #         else:
 
 
-#             y=df["PRINC_DIAG_CODE"].map(
+#             y=df["ICD3_DIAG_CODE"].map(
 #                 self.mapping
 #             )
 
@@ -996,7 +996,7 @@ if __name__=="__main__":
 
 #         for col in [
 
-#             "PRINC_DIAG_CODE",
+#             "ICD3_DIAG_CODE",
 #             "SEX_CODE",
 #             "RACE",
 #             "ETHNICITY",
