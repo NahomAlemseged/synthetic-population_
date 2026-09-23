@@ -89,7 +89,7 @@ train:
 # ==============================
 evaluate:
   input:
-    - "!head /content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
     - "/content/synthetic-population_/model/model.pkl"  # Model from repo
