@@ -76,7 +76,6 @@ validate:
 train:
   input: 
     - "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv"
-"
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_with_apr_drg_gan.csv"
       
     - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
