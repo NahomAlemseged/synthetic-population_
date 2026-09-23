@@ -88,10 +88,10 @@ train:
 # ==============================
 evaluate:
   input:
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
     - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
-    - "/content/synthetic-population_/model/ctgan_icd3.pkl"  # Model from repo
+    - "/content/synthetic-population_/model/model.pkl"  # Model from repo
 
   output:
     - "synthetic-population_/assets/"          # Evaluation outputs stay in repo
