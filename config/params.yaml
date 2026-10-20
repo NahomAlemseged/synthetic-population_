@@ -75,10 +75,9 @@ validate:
 # ==============================
 train:
   input: 
-    - "/content/drive/MyDrive/data_THCIC/gold/synthetic_inpatient/synthetic_inpatient.csv"
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_with_apr_drg_gan.csv"
-      
-    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_population_with_icd.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/generated/synthetic_inpatient/synthetic_inpatient/synthetic_with_apr_drg_gan.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/test.csv"
+    - "/content/drive/MyDrive/data_THCIC/gold/train.csv"
   output: 
     - "synthetic-population_/model/"   # Models stay in repo
     - "synthetic-population_/model_icd/" 
